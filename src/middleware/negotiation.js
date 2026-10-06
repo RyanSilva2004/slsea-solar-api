@@ -1,4 +1,4 @@
-// §6.2 step 2
+// §6.2 step 3
 import { ApiError } from '../lib/errors.js';
 
 export default function negotiation(req, res, next) {

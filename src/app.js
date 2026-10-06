@@ -1,4 +1,5 @@
 import express from 'express';
+import securityHeaders from './middleware/security-headers.js';
 import origin from './middleware/origin.js';
 import negotiation from './middleware/negotiation.js';
 import notFound from './middleware/not-found.js';
@@ -15,6 +16,7 @@ app.set('etag', false);
 app.set('x-powered-by', false);
 
 // §6.2 pipeline order
+app.use(securityHeaders);
 app.use(origin);
 app.use(toolingRouter);
 app.use(negotiation);

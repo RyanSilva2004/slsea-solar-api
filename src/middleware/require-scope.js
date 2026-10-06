@@ -1,4 +1,4 @@
-// §7.5 (§6.2 step 5)
+// §7.5 (§6.2 step 6)
 import { ApiError } from '../lib/errors.js';
 
 export default function requireScope(...anyOf) {

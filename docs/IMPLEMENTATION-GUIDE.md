@@ -9,11 +9,25 @@ This is the **only** specification for the build. Build exactly what is written 
 - This file is the single source of truth. Do not read or rely on any other design document.
 - Build the steps in §13 **in order**, one at a time. Do not start a step until the previous one is marked done.
 - A step is done when every "Done when" item passes, its tests are added, and it is committed.
+- **Review gate.** Before committing a step, list in the step report:
+  - (a) every place where the code differs from this file;
+  - (b) every rule that was relaxed, reinterpreted or skipped.
+  - A rule is never relaxed without the user's approval. An approved change is applied through §0.1.
 - After each step, update this file:
-  - §14 Progress — status, date, commit hash, short note.
+  - §14 Progress — status, date, commit hash, short note. The hash of a step is recorded in the next step's commit; no separate commits for hashes.
   - §15 Issues — every bug or wrong output you found and fixed in code (yours included).
   - §16 Open questions — anything unclear or contradictory. Do not guess; ask the user.
-  - §17 Change log — every change to this specification (rules below).
+  - §17 Change log — every change to this specification (rules in §0.1).
+- Commit at least once per step. Message format: `L4: geography endpoints` (step id + short summary).
+- Never run `git push`. The user reviews each step and pushes.
+- Stop every server or background process you start before the step ends. Nothing may be left listening on `PORT`.
+- Do not add endpoints, fields, query parameters, error codes, dependencies or features that are not in this file.
+- Never change anything in `seed/` except the git-ignored `seed/seed-output/`, which you only read.
+- Never commit `.env` or `seed/seed-output/`.
+- The database is the seeded **MongoDB Atlas** cluster, used from the first step. Never drop a collection, never delete or change seeded records directly in the database, and never run the seed tool.
+- Write tests (`npm test`) may run against Atlas. Every installation they create uses a `meter_id` starting with `TEST-`. The user re-seeds before submission, which removes test data.
+- Keep code plain and readable. Small functions. Comments only where they point to a section of this file (e.g. `// §6.7`).
+- Use ES modules (`import`/`export`).
 
 ### 0.1 Keeping this specification current
 
@@ -22,14 +36,6 @@ This is the **only** specification for the build. Build exactly what is written 
 - Add one line per edit to §17: date, step, section, the new statement (short).
 - Later steps follow the edited sections. Nothing in §15–§17 overrides a section; the section is always the current rule.
 - §16 answers are moved into the relevant section (and logged in §17) before the step continues.
-- Commit at least once per step. Message format: `L4: geography endpoints` (step id + short summary).
-- Do not add endpoints, fields, query parameters, error codes, dependencies or features that are not in this file.
-- Never change anything in `seed/`.
-- Never commit `.env`, `seed-output/` or `seed/seed-output/`.
-- The database is the seeded **MongoDB Atlas** cluster, used from the first step. Never drop a collection, never delete or change seeded records directly in the database, and never run the seed tool.
-- Write tests (`npm test`) may run against Atlas. Every installation they create uses a `meter_id` starting with `TEST-`. The user re-seeds before submission, which removes test data.
-- Keep code plain and readable. Small functions. Comments only where they point to a section of this file (e.g. `// §6.7`).
-- Use ES modules (`import`/`export`).
 
 ---
 
@@ -52,6 +58,7 @@ This is the **only** specification for the build. Build exactly what is written 
 | Database | MongoDB through `mongoose` ^8 |
 | Tokens | `jsonwebtoken` ^9 (HS256) |
 | Password hashing | `bcryptjs` ^3 |
+| Rate limiting | `express-rate-limit` ^8 (default in-memory store) |
 | API docs | `swagger-ui-express` ^5 |
 | Built-ins used | `node:crypto`, `node:test`, `node --env-file`, `node --watch` |
 | Process manager (production) | `pm2` (installed globally on the server, not a dependency) |
@@ -83,10 +90,11 @@ This is the **only** specification for the build. Build exactly what is written 
 │   │   ├── region-readings.js  summaries.js  users.js  tooling.js
 │   ├── controllers/                 one file per routes file: request → lib/models → response
 │   ├── middleware/
-│   │   ├── origin.js  negotiation.js  authenticate.js  require-scope.js
-│   │   ├── json-body.js  method-not-allowed.js  not-found.js  error-handler.js
+│   │   ├── security-headers.js  origin.js  negotiation.js  authenticate.js  require-scope.js
+│   │   ├── rate-limit.js  json-body.js  method-not-allowed.js  not-found.js  error-handler.js
 │   ├── lib/
 │   │   ├── errors.js                ApiError class + error catalogue (§6.10)
+│   │   ├── audit.js                 security audit log lines (§7.12)
 │   │   ├── geography.js             in-memory geography cache + area helpers (§7.6)
 │   │   ├── derived.js               latest readings, reporting status, energy today, summaries (§8)
 │   │   ├── http-cache.js            ETag, Last-Modified, conditional GET, If-Match (§6.7, §6.8)
@@ -97,7 +105,7 @@ This is the **only** specification for the build. Build exactly what is written 
 │   │   ├── ids.js                   counters and id formats (§5.4)
 │   │   ├── time.js                  ISO parsing, Sri Lanka day (§6.6, §8)
 │   │   ├── tokens.js                JWT sign/verify (§7.3), role → scopes (§7.1)
-│   │   └── secrets.js               device secrets, password hashing (§7.7, §7.8)
+│   │   └── secrets.js               device secrets, password hashing, `DUMMY_HASH`, Basic header parsing (§7.2, §7.7, §7.8)
 │   └── openapi/
 │       └── document.js              OpenAPI 3.0.3 document as a JS object (§10)
 ├── scripts/
@@ -157,10 +165,10 @@ seed/seed-output/
 |---|---|---|---|
 | `PORT` | `3000` | yes | HTTP port |
 | `MONGODB_URI` | `mongodb+srv://USER:PASS@CLUSTER.mongodb.net/slsea` | yes | the seeded Atlas database (name taken from the URI) |
-| `PUBLIC_BASE_URL` | `http://localhost:3000/solar/v1.0` | yes | every absolute URL the API returns; no trailing slash |
+| `PUBLIC_BASE_URL` | `http://localhost:3000/solar/v1.0` | yes | every absolute URL the API returns; no trailing slash; `https://` in production |
 | `JWT_SECRET` | 64 random characters | yes, ≥ 32 chars | token signing |
 | `BOOTSTRAP_ADMIN_USERNAME` | `hq.admin` | no (default `hq.admin`) | §7.9 |
-| `BOOTSTRAP_ADMIN_PASSWORD` | — | yes when `users` is empty | §7.9 |
+| `BOOTSTRAP_ADMIN_PASSWORD` | — | yes when `users` is empty; 10–72 characters whenever set | §7.9 |
 | `ORIGIN_SECRET` | empty locally | no | §7.10; guard is off when empty |
 | `TEST_BASE_URL` | `http://localhost:3000/solar/v1.0` | tests/scripts (default `PUBLIC_BASE_URL`) | §11, §12 |
 | `TEST_ACCOUNT_PASSWORD` | — | tests/scripts | §11.1 |
@@ -168,6 +176,7 @@ seed/seed-output/
 | `SIM_SKIP` | `INS-000002,INS-000065` | simulator (this default) | §11.2 |
 
 - `config.js` stops the process with a clear message if a required variable is missing or invalid.
+- `config.js` checks that `BOOTSTRAP_ADMIN_PASSWORD`, when set, is 10–72 characters; otherwise it stops the process with a clear message.
 - `.env.example` lists every name above with placeholder values and no real secrets.
 
 ---
@@ -298,8 +307,8 @@ Declare exactly these in the schemas (they already exist from the seed for the f
 
 - `INS-000004` (Colombo, substation 1) is a normal site; its secret is in `seed/seed-output/test-device.json` on the machine that ran the seed.
 - The Atlas database is already seeded. Re-seeding is done by the user only (before submission), never by the agent or the app:
-  `python3 seed/seed_slsea.py --uri "<MONGODB_URI>" --drop`
-  run from `seed/` (`cd seed`), so it writes device secrets to `seed/seed-output/` (git-ignored).
+  `cd seed && python3 seed_slsea.py --uri "<MONGODB_URI>" --drop`
+  Run from `seed/`, it writes device secrets to `seed/seed-output/` (git-ignored).
 
 ### 5.4 Ids for new records
 
@@ -350,18 +359,21 @@ Declare exactly these in the schemas (they already exist from the seed for the f
 
 | Step | Where | Check | Failure |
 |---|---|---|---|
-| 0 | `origin.js` (all requests) | `X-Origin-Secret` equals `ORIGIN_SECRET` (only when set) | 403 `40309` |
-| 1 | `tooling.js` | tooling routes (§10) answered here; they skip steps 2–7 | — |
-| 2 | `negotiation.js` | if `Accept` is present, `req.accepts('application/json')` must be truthy | 406 `40601` |
-| 3 | router | path exists; method allowed | 404 `40403` · 405 `40501` |
-| 4 | `authenticate.js` | bearer token valid and current (§7.4) | 401 `40101` · `40102` |
-| 5 | `require-scope.js` | effective scopes contain the route's scope (§7.5) | 403 `40301` |
-| 6 | `json-body.js` (routes with a JSON body) | `Content-Type` is `application/json` (charset allowed), then JSON parses | 415 `41501` · 400 `40001` |
-| 7 | controller | in this order: query/body validation (400) → target exists and is in the area (404 / 403) → `If-Match` (403 `40303` / 412) → business rules (409 / 403) → respond |
+| 0 | `security-headers.js` (all requests) | sets the security headers of §6.11 on every response | — |
+| 1 | `origin.js` (all requests) | `X-Origin-Secret` equals `ORIGIN_SECRET` (only when set) | 403 `40309` |
+| 2 | `tooling.js` | tooling routes (§10) answered here; they skip steps 3–9 | — |
+| 3 | `negotiation.js` | if `Accept` is present, `req.accepts('application/json')` must be truthy | 406 `40601` |
+| 4 | router | path exists; method allowed | 404 `40403` · 405 `40501` |
+| 5 | `authenticate.js` | bearer token valid and current (§7.4) | 401 `40101` · `40102` |
+| 6 | `require-scope.js` | effective scopes contain the route's scope (§7.5) | 403 `40301` |
+| 7 | `rate-limit.js` (routes listed in §7.11) | request within the limit | 429 `42901` |
+| 8 | `json-body.js` (routes with a JSON body) | `Content-Type` is `application/json` (charset allowed), then JSON parses | 415 `41501` · 400 `40001` |
+| 9 | controller | in this order: query/body validation (400) → target exists and is in the area (404 / 403) → `If-Match` (403 `40303` / 412) → business rules (409 / 403) → respond |
 
-- `/token` uses its own body handling (§7.2) and no step 4–5.
-- `json-body.js` = content-type check, then `express.json({ limit: '100kb' })`. Parse errors → 400 `40001` "Malformed JSON body". Body over 100kb → 400 `40001`. Unsupported charset or content encoding → 415 `41501`.
+- `/token` uses its own body handling and its own rate limit (§7.2, §7.11); steps 5–8 do not apply to it.
+- `json-body.js` = content-type check, then `express.json({ limit: '16kb' })`. Parse errors → 400 `40001` "Malformed JSON body". Body over 16kb → 400 `40001`. Unsupported charset or content encoding → 415 `41501`.
 - A JSON body must be a JSON object; anything else → 400 `40001`.
+- Request values reach database filters and updates only after validation as plain strings, numbers or dates. A request object, array or field is never placed into a filter or update as it arrived.
 - `error-handler.js` turns `ApiError` into the error body (§6.10). Any other error → log it, 500 `50001`, no stack trace.
 
 ### 6.3 Representations
@@ -474,11 +486,11 @@ Every 4xx and 5xx body:
 
 - `code`: from the table below. `description`: the fixed short title from the table. `message`: detailed text for this case. `more_info`: always `PUBLIC_BASE_URL + "/docs"`. `error`: one entry per field problem; `[]` when there is none.
 - All five fields are always present.
-- Thrown as `new ApiError(code, message, { errors, headers })` (`lib/errors.js`); `headers` carries `Allow` / `WWW-Authenticate`.
+- Thrown as `new ApiError(code, message, { errors, headers })` (`lib/errors.js`); `headers` carries `Allow` / `WWW-Authenticate` / `Retry-After`.
 
 | HTTP | Code | Description (fixed) | Used when |
 |---|---|---|---|
-| 400 | 40001 | Invalid request body | missing/unknown/invalid field; malformed JSON; bad form at `/token` |
+| 400 | 40001 | Invalid request body | missing/unknown/invalid field; malformed JSON; body over 16kb; bad form at `/token` |
 | 400 | 40002 | Invalid query parameter | unknown/repeated parameter; bad value; filter not inside the path region |
 | 400 | 40003 | Invalid time | bad timestamp; no offset; future/too old reading; `from >= to` |
 | 400 | 40004 | Reading value out of range | power, voltage or energy outside limits |
@@ -506,6 +518,7 @@ Every 4xx and 5xx body:
 | 409 | 40904 | Username taken | `username` used by another user |
 | 412 | 41201 | Precondition failed | stale `If-Match` |
 | 415 | 41501 | Unsupported media type | wrong request `Content-Type` |
+| 429 | 42901 | Too many requests | a rate limit of §7.11 exceeded (always with `Retry-After`) |
 | 500 | 50001 | Internal error | anything unexpected |
 
 ### 6.11 Response headers summary
@@ -518,7 +531,12 @@ Every 4xx and 5xx body:
 | `Content-Location` | last-known reading (EP9); identical reading resend (EP10) |
 | `Allow` | every 405 |
 | `WWW-Authenticate` | every 401 (values in §7.2, §7.4) |
+| `Retry-After` (whole seconds) | every 429 |
 | `Cache-Control: no-store` + `Pragma: no-cache` | `/token`, device credential, password responses |
+| `X-Content-Type-Options: nosniff` | every response (set by `security-headers.js`) |
+| `Strict-Transport-Security: max-age=31536000` | every response when `PUBLIC_BASE_URL` starts with `https://` (set by `security-headers.js`) |
+
+- No CORS headers are sent (no `Access-Control-*` headers on any response).
 
 ---
 
@@ -539,15 +557,18 @@ Every 4xx and 5xx body:
 
 - No bearer token. `Allow: POST`.
 - Every `/token` response, errors included, carries `Cache-Control: no-store` and `Pragma: no-cache`.
-- Every 401 `40103` carries `WWW-Authenticate: Basic realm="solar"`.
-- Request `Content-Type` must be `application/x-www-form-urlencoded` → else 415 `41501`. Parse with `express.urlencoded({ extended: false })`.
+- Every 401 `40103` carries `WWW-Authenticate: Basic realm="solar"` and writes a `token_rejected` audit line (§7.12).
+- Request `Content-Type` must be `application/x-www-form-urlencoded` → else 415 `41501`. Parse with `express.urlencoded({ extended: false, limit: '16kb' })`. Body over 16kb → 400 `40001`.
+- Order: content-type check → form parsing → token rate limit (§7.11) → grant handling.
 - Unknown form fields are **ignored**.
 - `grant_type` missing or not `password` / `client_credentials` → 400 `40001`.
 
 **`grant_type=password` (users)**
 - Fields `username`, `password` required as single non-empty values → else 400 `40001`.
 - Any `Authorization` header is ignored.
-- User not found or `bcrypt.compare` fails → 401 `40103`, `WWW-Authenticate: Basic realm="solar"`.
+- User not found → `bcrypt.compare(password, DUMMY_HASH)` still runs, then 401 `40103`. `DUMMY_HASH` is a bcrypt hash (cost 10) of a random value, created once when `lib/secrets.js` loads.
+- `bcrypt.compare` fails → 401 `40103`.
+- Both cases use the same message and `WWW-Authenticate: Basic realm="solar"`.
 - Token: `typ: "user"`, `sub: user_id`, `scope` = role scopes (§7.1), `ver = password_changed_at.getTime()`.
 
 **`grant_type=client_credentials` (devices)**
@@ -613,6 +634,7 @@ Every 4xx and 5xx body:
 
 ### 7.9 Bootstrap admin
 
+- `BOOTSTRAP_ADMIN_PASSWORD` must be 10–72 characters whenever it is set (checked by `config.js`, §4).
 - At start-up, if the `users` collection is empty:
   - `BOOTSTRAP_ADMIN_PASSWORD` missing → exit with an error.
   - Create `{ user_id: randomUUID(), name: "HQ Administrator", username: BOOTSTRAP_ADMIN_USERNAME, role: "ADMIN", jurisdiction_level: "NATIONAL", district_id: 1 }` with the hashed password.
@@ -622,6 +644,32 @@ Every 4xx and 5xx body:
 
 - When `ORIGIN_SECRET` is non-empty, every request (tooling included) must carry `X-Origin-Secret` equal to it (`timingSafeEqual`), else 403 `40309`.
 - When empty, the guard is skipped.
+
+### 7.11 Rate limits (`middleware/rate-limit.js`)
+
+| Limiter | Applies to | Key | Window | Limit | Requests counted |
+|---|---|---|---|---|---|
+| `tokenLimiter` | `POST /token`, after form parsing (§7.2) | `password:<username>` for the password grant; `device:<installation_id>` from the Basic header for client credentials; requests with no usable key are not counted (`skip`) | 15 minutes | 10 | only responses with status ≥ 400 (`skipSuccessfulRequests: true`); a successful token response resets the count for its key |
+| `readingsLimiter` | `POST /installations/{installation-id}/readings`, after `require-scope.js`, before `json-body.js` | `installation:<installation_id of the device token>` | 1 minute | 120 | every request |
+
+- `tokenLimiter` has no key for a password grant without a usable `username`, a client-credentials request without a readable Basic header, or any other `grant_type`; such requests are skipped and never counted.
+- A 200 from `/token` calls `tokenLimiter.resetKey(key)` for its key before responding.
+- Built with `express-rate-limit`: options `windowMs`, `limit`, `keyGenerator`, `skip` and `skipSuccessfulRequests` (token limiter only), `standardHeaders: false`, `legacyHeaders: false`, `validate: false`, default memory store.
+- `handler`: `next(new ApiError(42901, …, { headers: { 'Retry-After': seconds } }))`, where `seconds` = whole seconds until `req.rateLimit.resetTime`, at least 1.
+- Each 429 writes a `rate_limited` audit line (§7.12).
+- Counters live in the process; the API runs as one process (D1).
+
+### 7.12 Audit log (`lib/audit.js`)
+
+- `audit(event, fields)` writes one JSON line to standard output: `{ "time": "<ISO>", "event": "<event>", …fields }`.
+
+| Event | When | Fields |
+|---|---|---|
+| `token_rejected` | every 401 `40103` at `/token` | `grant` (`password` / `client_credentials` / null), `subject` (username or installation id as sent, or null) |
+| `rate_limited` | every 429 | `limiter`, `key` |
+| `wrong_installation` | every 403 `40306` | `token_installation`, `path_installation` |
+
+- Never written to the audit log: passwords, device secrets, tokens, `Authorization` headers, request bodies.
 
 ---
 
@@ -655,7 +703,7 @@ Constants: reporting interval 15 min; silent threshold 30 min; Sri Lanka offset 
 All paths below are after `/solar/v1.0`. Common to every endpoint unless stated: bearer token required; `Accept` checked; GET responses follow §6.7; errors follow §6.10; 401/403 `40301`/405/406 possible everywhere.
 
 ### EP1 — `/token` — POST
-- See §7.2.
+- See §7.2 and §7.11.
 
 ### EP2 — `/provinces`, `/provinces/{province-id}` — GET
 - Scope `geography:read`.
@@ -759,12 +807,14 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 - Not found / not in area → 404 `40401`.
 - Query: `installation_id`, `recorded_at` window, sort by `recorded_at` (direction from `sort`), skip/limit, `countDocuments` for `count`.
 
-**POST** — scope `readings:write` (device tokens only), JSON body. Steps in order:
+**POST** — scope `readings:write` (device tokens only), JSON body.
+- Middleware order: `authenticate` → `requireScope('readings:write')` → `readingsLimiter` (§7.11) → `json-body`.
+- Controller steps in order:
 1. Body exactly: `recorded_at`, `power_kw`, `energy_kwh`, `voltage`, all required.
    - `installation_id` in the body → 400 `40001` ("installation_id comes from the URL"). Other unknown field → 400 `40001`.
    - Numbers must be finite JSON numbers → else 400 `40001`. `recorded_at` missing or not a string → 400 `40001`.
 2. `recorded_at` invalid per §6.6, more than 2 minutes in the future, or more than 7 days before now → 400 `40003`.
-3. Path installation ≠ the token's installation → 403 `40306`.
+3. Path installation ≠ the token's installation → 403 `40306` and a `wrong_installation` audit line (§7.12).
 4. Installation `DECOMMISSIONED` → 403 `40304`.
 5. Ranges → 400 `40004`: `power_kw < 0` or `> capacity_kw × 1.05`; `voltage < 180` or `> 270`; `energy_kwh < 0`.
 6. A reading with the same `installation_id` and `recorded_at` exists:
@@ -819,7 +869,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 - Order: not found (404) → `If-Match` → target is the caller (403 `40305`) → delete. Response 200, body = deleted representation.
 
 ### EP15 — `/users/{user-id}/password` — POST
-- Required scope: `account:write` or `users:manage` (either passes step 5).
+- Required scope: `account:write` or `users:manage` (either passes pipeline step 6).
 - **Own account** (`user-id` = caller):
   - Body exactly `current_password`, `new_password` → else 400 `40001`.
   - `current_password` wrong → 403 `40307`.
@@ -858,11 +908,12 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 **OpenAPI document** (`src/openapi/document.js`, OpenAPI 3.0.3):
 - `servers: [{ url: PUBLIC_BASE_URL }]`.
 - Every path and method in §9 with: summary, parameters (path + query with types and enums), request body schema, every success response with headers, every error status the endpoint can return.
+- `POST /token` and `POST /installations/{installation-id}/readings` list 429 with the `Retry-After` header.
 - Components: schemas for every representation, the collection envelope, the summary, the overview, the token response, and `Error` (§6.10).
 - `securitySchemes`: `oauth2` with flows `password` and `clientCredentials`, both `tokenUrl: PUBLIC_BASE_URL + "/token"`, scopes from §7.1 with one-line descriptions.
 - Each operation lists its required scope under `security`.
 - `If-Match` declared as a **required** header on PUT and DELETE.
-- A short `info.description` covering: how to get a token in Swagger (Authorize → password flow with a test account, or client-credentials with `installation_id` + secret), and the error codes table.
+- A short `info.description` covering: how to get a token in Swagger (Authorize → password flow with a test account, or client-credentials with `installation_id` + secret), the rate limits (§7.11), and the error codes table.
 
 ---
 
@@ -895,7 +946,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
   - `recorded_at` = now floored to 15 minutes (UTC).
   - `power_kw` = 0 outside 06:15–18:00 Sri Lanka time; inside: `capacity_kw × 0.85 × sin(π × (minutesSinceMidnightLocal − 360) / 720)^1.3 × random(0.92–1.0)`, capped at `capacity_kw`, rounded to 3 decimals.
   - `energy_kwh` = last energy + `power_kw × 0.25`, rounded to 3 decimals. `voltage` = random 215–250, 1 decimal.
-  - `POST /installations/{id}/readings`. 201 or 200 → keep the new energy. Log any other status and continue.
+  - `POST /installations/{id}/readings`. 201 or 200 → keep the new energy. 429 → wait `Retry-After` seconds and retry once. Log any other status and continue.
 - Modes: `node scripts/simulate.js --once` (one tick, then exit) and default (tick at every 15-minute boundary + 30 s, forever).
 - Base URL from `TEST_BASE_URL`.
 
@@ -909,18 +960,20 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 - Write tests create their own installation in Colombo (via `colombo.officer`) with `meter_id` = `TEST-` + a unique suffix (e.g. timestamp), issue its credential and post readings with `recorded_at` inside the last hour.
 - Tests never modify or delete seeded installations (`INS-000001`–`INS-000240`), except read-only checks and refused operations (e.g. DELETE `INS-000003` → 409).
 - Count assertions on seeded areas use `≥` (earlier test runs add records).
-- One file per step: `01-pipeline.test.js`, `02-token.test.js`, `03-geography.test.js`, `04-users.test.js`, `05-installations.test.js`, `06-readings.test.js`, `07-views.test.js`, `08-summaries.test.js`.
-- `smoke.test.js` is **read-only** (safe for production): health, docs, openapi, token for `national.analyst` and `colombo.analyst`, one GET per endpoint family, a 304 round trip, 401 without token, 403 `40301` for an analyst on `/users`, 404 for `INS-000064` as `colombo.analyst`, 403 `40302` for `colombo.analyst` on Kandy's summary.
+- Rate-limit tests use keys no other test uses: usernames that do not exist (`probe-` + random suffix) for the token limiter, and a dedicated `TEST-` installation for the readings limiter. Real accounts and other tests are never limited.
+- A third and fourth full test run in a row on the same server process pass without 429.
+- Files: `01-pipeline.test.js`, `02-token.test.js`, `02b-hardening.test.js`, `03-geography.test.js`, `04-users.test.js`, `05-installations.test.js`, `06-readings.test.js`, `07-views.test.js`, `08-summaries.test.js`.
+- `smoke.test.js` is **read-only** (safe for production): health, docs, openapi, token for `national.analyst` and `colombo.analyst`, one GET per endpoint family, a 304 round trip, 401 without token, 403 `40301` for an analyst on `/users`, 404 for `INS-000064` as `colombo.analyst`, 403 `40302` for `colombo.analyst` on Kandy's summary, `X-Content-Type-Options: nosniff` present.
 
 ---
 
 ## 13. Build steps
 
 ### L0 — Clean repository and scaffold
-- Remove every file and folder except `.git/`, `docs/IMPLEMENTATION-GUIDE.md`, `seed/seed_slsea.py`, `.env` and `seed-output/` (the last two are kept but must never be committed). If `seed/seed_slsea.py` is missing, stop and ask the user for it.
-- Run `git log --all --oneline -- .env seed-output` and record the result in §15 (if anything was ever committed, the user must rotate those secrets).
+- Remove every file and folder except `.git/`, `docs/IMPLEMENTATION-GUIDE.md`, `seed/seed_slsea.py`, `.env` and `seed/seed-output/` (the last two are kept but must never be committed). If `seed/seed_slsea.py` is missing, stop and ask the user for it.
+- Run `git log --all --oneline -- .env seed-output seed/seed-output` and record the result in §15 (if anything was ever committed, the user must rotate those secrets).
 - Create: `package.json` (§2, §3.2), `.gitignore` (§3.3), `.env.example` (§4), `seed/requirements.txt`, the folder layout (§3), `src/config.js`, `src/app.js`, `src/server.js` (listen only), `GET /` health route, a minimal `README.md` (how to install and run).
-- **Done when:** `npm install` succeeds with only the §2 dependencies; `npm run dev` starts; `GET /` returns the health JSON; `git status` shows no `.env` or `seed-output/`.
+- **Done when:** `npm install` succeeds with only the §2 dependencies; `npm run dev` starts; `GET /` returns the health JSON; `git status` shows no `.env` or `seed/seed-output/`.
 
 ### L1 — Database layer and start-up
 - Models (§5.1, §5.2), connection, `createIndexes`, counters (§5.4), geography cache (§7.6), bootstrap admin (§7.9), full start-up sequence (§5.5).
@@ -936,24 +989,43 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 - Tests: `02-token.test.js` (admin password grant OK; wrong password 401 `40103` + `WWW-Authenticate`; JSON body → 415; missing `grant_type` → 400; unknown form field ignored; `no-store` header; bad bearer → 401 `40102`; no bearer → 401 `40101`; device grant with `INS-000004` if `seed/seed-output/test-device.json` exists, else skipped; device grant for `INS-000003` → 401 `40103`). Until a route uses a bearer token (L4), the `authenticate.js` checks call the middleware directly, with the test connected to the database.
 - **Done when:** tests pass.
 
+### L3a — Auth hardening
+- §4 / §7.9: `BOOTSTRAP_ADMIN_PASSWORD` length 10–72 checked by `config.js` (reverses the §15 row 2 change; log the reversal as a new §15 row).
+- §7.2: equal-time password check with `DUMMY_HASH`; `/token` form limit 16kb; order content-type → form → `tokenLimiter` → grant.
+- §7.11: `middleware/rate-limit.js` with `tokenLimiter` (the `readingsLimiter` is added in L7); `express-rate-limit` added to `package.json`.
+- §7.12: `lib/audit.js`; `token_rejected` and `rate_limited` lines.
+- §6.2 / §6.11: `middleware/security-headers.js` as pipeline step 0; `json-body.js` limit 16kb; error catalogue 429 `42901` with `Retry-After`.
+- §6.2: review existing code for the rule "request values reach filters only after validation"; fix and log any place that breaks it.
+- Tests: `02b-hardening.test.js`:
+  - unknown username and wrong password for `hq.admin` each take at least 30 ms;
+  - 11 failed logins for `probe-<random>` → the 11th is 429 `42901` with `Retry-After`, `Cache-Control: no-store` and the five-field error body;
+  - a second unknown username `probe-<random>` still gets 401 (keys are separate);
+  - after 3 failed logins for `hq.admin`, one successful login resets the count (3 more failures still give 401, not 429);
+  - 15 requests with a missing `grant_type` → all 400, none 429;
+  - 12 successful `hq.admin` logins in a row → all 200;
+  - form `username[$ne]=x&password=y&grant_type=password` → 400 `40001`;
+  - `/token` body over 16kb → 400 `40001`;
+  - `X-Content-Type-Options: nosniff` on `GET /` and on a 404; no `Access-Control-Allow-Origin` header; no `Strict-Transport-Security` while `PUBLIC_BASE_URL` is `http://`.
+- **Done when:** `02b-hardening.test.js` and all earlier tests pass; starting the app with a 9-character `BOOTSTRAP_ADMIN_PASSWORD` exits with code 1 and a clear message; one failed login prints exactly one `token_rejected` line that contains no password.
+
 ### L4 — Geography
 - EP2, EP3, EP4 with pagination, filters, conditional GET.
-- Tests: `03-geography.test.js` (counts 9/25/42; `/districts?province-id=1` count 3; `/substations?district-id=1` count 3; unknown id 404; `/districts/abc` 404; `?limit=101` 400 `40002`; unknown param 400; next/previous links; `If-None-Match` → 304 empty body; `If-Modified-Since` → 304; POST → 405 with `Allow: GET`).
+- Tests: `03-geography.test.js` (counts 9/25/42; `/districts?province-id=1` count 3; `/substations?district-id=1` count 3; unknown id 404; `/districts/abc` 404; `?limit=101` 400 `40002`; unknown param 400; next/previous links; `If-None-Match` → 304 empty body; `If-Modified-Since` → 304; POST → 405 with `Allow: GET`; no token → 401 `40101` with `WWW-Authenticate: Bearer realm="solar"`; device token → 403 `40301`).
 - **Done when:** tests pass.
 
 ### L5 — Users and passwords
 - EP13, EP14, EP15; `scripts/create-test-accounts.js` (§11.1).
-- Tests: `04-users.test.js` (create → 201 + Location that resolves; duplicate username 409; ADMIN + DISTRICT 400; PUT without `If-Match` 403 `40303`; stale 412; admin PUT/DELETE own account 403 `40305`; analyst on `/users` 403 `40301`; own password change → old token 401 `40102`; wrong current password 403 `40307`; analyst changing another user's password 403 `40308`; admin reset OK; DELETE then DELETE → 200 then 404; deleted user's token → 401).
+- Tests: `04-users.test.js` (create → 201 + Location that resolves; duplicate username 409; ADMIN + DISTRICT 400; PUT without `If-Match` 403 `40303`; stale 412; admin PUT/DELETE own account 403 `40305`; analyst on `/users` 403 `40301`; own password change → old token 401 `40102`; wrong current password 403 `40307`; analyst changing another user's password 403 `40308`; admin reset OK; DELETE then DELETE → 200 then 404; deleted user's token → 401; JSON body over 16kb → 400 `40001`; `"username": { "$gt": "" }` → 400 `40001`).
 - **Done when:** tests pass and `npm run accounts` creates all §11.1 accounts (and skips them on a second run).
 
 ### L6 — Installations and device credentials
 - EP6, EP7, EP12.
-- Tests: `05-installations.test.js` (`colombo.analyst` list count ≥ 27 and `national.analyst` ≥ 240 — exactly 27 / 240 on a fresh seed, more after write tests; `?district-id=4` as `colombo.analyst` → 403 `40302`; `?reporting-status=NEVER_REPORTED` as `colombo.analyst` → only `INS-000001`; `INS-000064` as `colombo.analyst` → 404; officer POST → 201 + Location, status ACTIVE; `status` in POST body 400; substation 8 as `colombo.officer` → 403; duplicate meter 409; PUT full replace with `If-Match`; PUT missing field 400; PUT to substation 8 → 403; DELETE `INS-000003` → 409 `40903`; credential → 200 + secret + `no-store`; device token works with the new secret; re-issue → old device token 401; decommission via PUT → device token 401 `40102`, `/token` 401 `40103`, credential issue 403 `40304`; analyst POST → 403 `40301`; DELETE new installation without readings → 200).
+- Tests: `05-installations.test.js` (`colombo.analyst` list count ≥ 27 and `national.analyst` ≥ 240 — exactly 27 / 240 on a fresh seed, more after write tests; `?district-id=4` as `colombo.analyst` → 403 `40302`; `?reporting-status=NEVER_REPORTED` as `colombo.analyst` → only `INS-000001`; `INS-000064` as `colombo.analyst` → 404; officer POST → 201 + Location, status ACTIVE; `status` in POST body 400; `"meter_id": { "$gt": "" }` → 400 `40001`; substation 8 as `colombo.officer` → 403; duplicate meter 409; PUT full replace with `If-Match`; PUT missing field 400; PUT to substation 8 → 403; DELETE `INS-000003` → 409 `40903`; credential → 200 + secret + `no-store`; device token works with the new secret; re-issue → old device token 401; decommission via PUT → device token 401 `40102`, `/token` 401 `40103`, credential issue 403 `40304`; analyst POST → 403 `40301`; DELETE new installation without readings → 200).
 - **Done when:** tests pass.
 
 ### L7 — Readings
-- EP10 (GET + POST), EP11, EP9.
-- Tests: `06-readings.test.js` (POST → 201 + Location that resolves; identical resend → 200 + Content-Location; changed values same time → 409; `installation_id` in body 400; no offset 400 `40003`; 10 min in future 400 `40003`; 8 days old 400 `40003`; power > capacity × 1.05 → 400 `40004`; voltage 300 → 400 `40004`; energy below previous → 400 `40005`; late reading between two others with consistent counter → 201; device posting to another installation 403 `40306`; analyst POST → 403 `40301`; device GET → 403 `40301`; history `count` 672 for `INS-000004`; `sort=recorded-at:asc` order; `from`/`to` window; `from >= to` 400; last-known of `INS-000001` → 404 `40402`; last-known Content-Location resolves; reading of another installation → 404; PUT on a reading → 405).
+- EP10 (GET + POST), EP11, EP9; `readingsLimiter` (§7.11); `wrong_installation` audit line (§7.12).
+- Tests: `06-readings.test.js` (POST → 201 + Location that resolves; identical resend → 200 + Content-Location; changed values same time → 409; `installation_id` in body 400; no offset 400 `40003`; 10 min in future 400 `40003`; 8 days old 400 `40003`; power > capacity × 1.05 → 400 `40004`; voltage 300 → 400 `40004`; energy below previous → 400 `40005`; late reading between two others with consistent counter → 201; device posting to another installation 403 `40306`; analyst POST → 403 `40301`; device GET → 403 `40301`; history `count` 672 for `INS-000004`; `sort=recorded-at:asc` order; `from`/`to` window; `from >= to` 400; last-known of `INS-000001` → 404 `40402`; last-known Content-Location resolves; reading of another installation → 404; PUT on a reading → 405; on a dedicated `TEST-` installation, 121 POSTs with body `{}` within one minute → the first 120 are 400 `40001` and the 121st is 429 `42901` with `Retry-After`; another installation is not limited at the same time).
 - **Done when:** tests pass.
 
 ### L8 — Overview and region readings
@@ -968,23 +1040,23 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 
 ### L10 — OpenAPI and Swagger UI
 - `src/openapi/document.js` (§10), `/openapi`, `/docs`.
-- **Done when:** `/solar/v1.0/docs` loads in a browser; Authorize with the password flow (`colombo.analyst`) works and "Try it out" succeeds on `/installations`; client-credentials flow works with a device credential; every endpoint and status in §9 is listed; the document is valid OpenAPI 3.0.3 (no errors shown by Swagger UI).
+- **Done when:** `/solar/v1.0/docs` loads in a browser with the security headers in place; Authorize with the password flow (`colombo.analyst`) works and "Try it out" succeeds on `/installations`; client-credentials flow works with a device credential; every endpoint and status in §9 is listed, including 429 on `/token` and readings POST; the document is valid OpenAPI 3.0.3 (no errors shown by Swagger UI).
 
 ### L11 — Full acceptance and README
 - Run the full suite against Atlas with the app running on the laptop.
 - Review every endpoint against §9 one more time; fix and log gaps in §15.
-- README: what the API is; local setup (Atlas URI in `.env`, laptop IP in Atlas Network Access, `npm run dev`, `npm run accounts`, `npm test`); seed command (user only); test accounts table; edge-case installations table (§5.3); how to get a token (curl examples for both grants); link to `/docs`; error code table reference.
+- README: what the API is; local setup (Atlas URI in `.env`, laptop IP in Atlas Network Access, `npm run dev`, `npm run accounts`, `npm test`); seed command (user only); test accounts table; edge-case installations table (§5.3); how to get a token (curl examples for both grants); rate limits (§7.11); link to `/docs`; error code table reference.
 - **Done when:** `npm test` passes completely twice in a row (the second run proves tests do not depend on a clean database); README steps work from a fresh clone.
 
 ### D1 — Production readiness
 - `ecosystem.config.cjs`: app name `slsea-api`, script `src/server.js`, `node_args: '--env-file=.env'`, `instances: 1`, `autorestart: true`, `max_memory_restart: '300M'`.
 - Confirm the origin guard (§7.10) and `PUBLIC_BASE_URL` are used everywhere (Location, links, `more_info`, OpenAPI `servers` and `tokenUrl`).
 - README: "Deployment" section (EC2 commands: install Node 24, `npm ci --omit=dev`, `pm2 start ecosystem.config.cjs`, `pm2 save`, `pm2 startup`; update: `git pull && npm ci --omit=dev && pm2 reload slsea-api`).
-- **Done when:** app runs under pm2 locally with `ORIGIN_SECRET` set; requests without the header get 403 `40309`; `npm run test:smoke` passes with the header supplied (helpers send `X-Origin-Secret` when `ORIGIN_SECRET` is set).
+- **Done when:** app runs under pm2 locally with `ORIGIN_SECRET` set; requests without the header get 403 `40309`; with `PUBLIC_BASE_URL=https://example.test/solar/v1.0` every response carries `Strict-Transport-Security`; `npm run test:smoke` passes with the header supplied (helpers send `X-Origin-Secret` when `ORIGIN_SECRET` is set).
 
 ### D2 — Device simulator
 - `scripts/simulate.js` (§11.2).
-- **Done when:** `npm run simulate -- --once` against local posts one reading per device (except `SIM_SKIP`) with 201s; a second `--once` in the same slot gets 200s; `INS-000004` overview shows `REPORTING`.
+- **Done when:** `npm run simulate -- --once` against local posts one reading per device (except `SIM_SKIP`) with 201s; a second `--once` in the same slot gets 200s; `INS-000004` overview shows `REPORTING`; no 429 responses during a full tick.
 
 ---
 
@@ -996,6 +1068,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 | L1 Database + start-up | ☑ | 2026-10-06 | b382a88 | 7 models + §5.2 indexes; counters 240 / 159312; geography 9/25/42; `hq.admin` created on first start, skipped on restart; seed indexes unchanged |
 | L2 HTTP foundation | ☑ | 2026-10-06 | 73a742b | Pipeline origin → tooling → negotiation → routers → 404 → error handler; `ApiError` + catalogue; json-body, http-cache, pagination, query, time, representations; `01-pipeline.test.js` 10/10 (origin guard run with `ORIGIN_SECRET` set) |
 | L3 Token + authentication | ☑ | 2026-10-06 | 6fd605f | `POST /token` password + client-credentials grants; `lib/tokens.js` (HS256, iss/aud, role scopes), `lib/secrets.js`, `authenticate.js`, `require-scope.js`, `areaOf`; `02-token.test.js` 16/16 (device grant with `INS-000004` ran) |
+| L3a Auth hardening | ☑ | 2026-10-07 | | `security-headers.js` (step 0), `tokenLimiter` (10 failures / 15 min per key, success resets, keyless requests skipped), `DUMMY_HASH` equal-time login, `lib/audit.js` (`token_rejected`, `rate_limited`), 16kb form/JSON limits, 429 `42901`, `BOOTSTRAP_ADMIN_PASSWORD` 10–72 check; filter-validation review found nothing to fix; `npm test` 33 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process |
 | L4 Geography | ☐ | | | |
 | L5 Users + passwords | ☐ | | | |
 | L6 Installations + credentials | ☐ | | | |
@@ -1016,8 +1089,10 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | # | Step | What was wrong | Spec section | Fix | Commit |
 |---|---|---|---|---|---|
 | 1 | L0 | `git log --all --oneline -- .env seed-output` returned no commits: `.env` and `seed-output/` were never committed; no secrets to rotate | §13 L0 | None needed; both git-ignored (§3.3) | — |
-| 2 | L1 | Bootstrap admin (own code) rejected a `BOOTSTRAP_ADMIN_PASSWORD` shorter than 10 characters; §7.9 only requires it to be present | §7.9 | Check reduced to "missing → exit" | b382a88 |
+| 2 | L1 | Bootstrap admin (own code) rejected a `BOOTSTRAP_ADMIN_PASSWORD` shorter than 10 characters; §7.9 only requires it to be present | §7.9 | Check reduced to "missing → exit" (reversed in L3a: §4/§7.9 now require 10–72) | b382a88 |
 | 3 | L3 | Spec paths named `seed-output/` at the repo root; the seed output is in `seed/seed-output/`, so the `INS-000004` device test would always be skipped | §0, §3, §3.3, §4, §5.3, §13 L3 | Paths changed to `seed/seed-output/` (user's decision); `.env.example` and `.gitignore` updated | 6fd605f |
+| 4 | L3a | Reversal of row 2: start-up accepted a `BOOTSTRAP_ADMIN_PASSWORD` of any length; §4/§7.9 now require 10–72 characters whenever set | §4, §7.9 | `config.js` checks the length and exits with code 1 and a clear message | (L3a) |
+| 5 | L3a | `/token` returned 401 for an unknown username without running bcrypt, so it answered faster than a wrong password | §7.2 | `checkPassword` compares against `DUMMY_HASH` when the user is missing | (L3a) |
 
 ---
 
@@ -1025,7 +1100,7 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 
 | # | Step | Question | Answer (from the user) |
 |---|---|---|---|
-| | | | |
+| 1 | L3a | `tokenLimiter` counts every response ≥ 400. Each `npm test` run sends 4 such responses keyed `password:hq.admin` (2 wrong passwords in `02-token`, 1 missing password in `02-token`, 1 wrong password in `02b`) and 4 keyed `invalid` (missing/unknown `grant_type` and device grant without `Authorization` in `02-token`, `username[$ne]` in `02b`). A third run within 15 minutes on the same server process makes `hq.admin` hit 429, which conflicts with §12 "real accounts … are never limited". Restart the server between runs, change the tests to use `probe-` usernames, or something else? || A success resets its key; requests with no usable key are skipped (no `invalid` key); tests must pass on a third and fourth run in a row. Moved to §7.11, §12, §13 L3a (§17 #29–31) |
 
 ---
 
@@ -1045,4 +1120,23 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 10 | 2026-10-06 | L3 | §13 L3 | Device test reads `seed/seed-output/test-device.json`; `authenticate.js` checks call the middleware directly until L4 |
 | 11 | 2026-10-06 | L3 | §3, §7.1 | `lib/tokens.js` holds role → scopes: `roleScopes(role)`, `DEVICE_SCOPES` |
 | 12 | 2026-10-06 | L3 | §7.2 | Every `/token` response carries `no-store`/`no-cache`; every 40103 carries `WWW-Authenticate: Basic realm="solar"`; `username`/`password` must be single non-empty values |
-| 2 | 2026-10-06 | L1 | §5.5 | Steps 2–6 each log one line (database, indexes, counters, geography, bootstrap) |
+| 13 | 2026-10-06 | L1 | §5.5 | Steps 2–6 each log one line (database, indexes, counters, geography, bootstrap) |
+| 14 | 2026-10-07 | L3a (review) | §0 | Review gate before each commit; never `git push`; stop every started server; step hash recorded in the next step's commit |
+| 15 | 2026-10-07 | L3a (review) | §0, §5.3, §13 L0 | Seed output path `seed/seed-output/` in all rules; re-seed runs from `seed/` |
+| 16 | 2026-10-07 | L3a (review) | §2 | `express-rate-limit` ^8 added as a runtime dependency |
+| 17 | 2026-10-07 | L3a (review) | §3 | New files `middleware/security-headers.js`, `middleware/rate-limit.js`, `lib/audit.js` |
+| 18 | 2026-10-07 | L3a (review) | §4, §7.9 | `BOOTSTRAP_ADMIN_PASSWORD` must be 10–72 characters whenever set; `config.js` exits otherwise |
+| 19 | 2026-10-07 | L3a (review) | §6.2 | Pipeline: step 0 security headers, step 7 rate limit, steps renumbered; JSON body limit 16kb; request values reach filters only after validation |
+| 20 | 2026-10-07 | L3a (review) | §6.10 | New code 429 `42901` "Too many requests" with `Retry-After`; `ApiError` headers include `Retry-After` |
+| 21 | 2026-10-07 | L3a (review) | §6.11 | `X-Content-Type-Options: nosniff` on every response; HSTS when `PUBLIC_BASE_URL` is `https://`; `Retry-After` on 429; no CORS headers |
+| 22 | 2026-10-07 | L3a (review) | §7.2 | Unknown username runs `bcrypt.compare` against `DUMMY_HASH`; form limit 16kb; order content-type → form → `tokenLimiter` → grant; 40103 writes `token_rejected` |
+| 23 | 2026-10-07 | L3a (review) | §7.11 | Rate limits: `tokenLimiter` 10 failed per 15 min per username/installation; `readingsLimiter` 120 per min per installation |
+| 24 | 2026-10-07 | L3a (review) | §7.12 | Audit log events `token_rejected`, `rate_limited`, `wrong_installation`; secrets never logged |
+| 25 | 2026-10-07 | L3a (review) | §9 EP10, EP15 | EP10 POST middleware order with `readingsLimiter`; 40306 writes `wrong_installation`; EP15 refers to pipeline step 6 |
+| 26 | 2026-10-07 | L3a (review) | §10, §11.2 | OpenAPI lists 429 + `Retry-After` and the rate limits; simulator retries once after 429 |
+| 27 | 2026-10-07 | L3a | §3 | `lib/secrets.js` also holds `DUMMY_HASH` and Basic header parsing (`readBasic`, used by `/token` and `tokenLimiter`) |
+| 28 | 2026-10-07 | L3a | §7.11 | `tokenLimiter` key is `invalid` also when `grant_type` is neither `password` nor `client_credentials` (replaced by #29) |
+| 29 | 2026-10-07 | L3a | §7.11 | Successful token response resets its key (`resetKey`); requests with no usable username / installation id, or another `grant_type`, are skipped; no `invalid` key |
+| 30 | 2026-10-07 | L3a | §12 | A third and fourth full test run in a row on the same server process pass without 429 |
+| 31 | 2026-10-07 | L3a | §13 L3a | `02b` adds: success resets the count after 3 failures; 15 missing-`grant_type` requests all 400 |
+| 27 | 2026-10-07 | L3a (review) | §12, §13 | New step L3a and `02b-hardening.test.js`; rate-limit tests use isolated keys; L4–L7, L10, L11, D1, D2 checks extended |

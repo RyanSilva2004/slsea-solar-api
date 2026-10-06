@@ -1,8 +1,8 @@
-// §6.2 step 6
+// §6.2 step 8
 import express from 'express';
 import { ApiError } from '../lib/errors.js';
 
-const parseJson = express.json({ limit: '100kb' });
+const parseJson = express.json({ limit: '16kb' });
 
 function checkContentType(req, res, next) {
   if (!req.is('application/json')) {
@@ -20,7 +20,7 @@ function parse(req, res, next) {
       return next(new ApiError(41501, 'Unsupported charset or content encoding.'));
     }
     if (err.type === 'entity.too.large') {
-      return next(new ApiError(40001, 'Request body is larger than 100kb.'));
+      return next(new ApiError(40001, 'Request body is larger than 16kb.'));
     }
     if (err.type === 'entity.parse.failed') {
       return next(new ApiError(40001, 'Malformed JSON body'));

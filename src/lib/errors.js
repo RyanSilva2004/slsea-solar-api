@@ -30,6 +30,7 @@ export const catalogue = {
   40904: { status: 409, description: 'Username taken' },
   41201: { status: 412, description: 'Precondition failed' },
   41501: { status: 415, description: 'Unsupported media type' },
+  42901: { status: 429, description: 'Too many requests' },
   50001: { status: 500, description: 'Internal error' },
 };
 

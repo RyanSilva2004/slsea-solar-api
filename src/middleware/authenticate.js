@@ -1,4 +1,4 @@
-// §7.4 (§6.2 step 4)
+// §7.4 (§6.2 step 5)
 import { ApiError } from '../lib/errors.js';
 import { verifyToken, roleScopes, DEVICE_SCOPES } from '../lib/tokens.js';
 import { areaOf } from '../lib/geography.js';

@@ -1,4 +1,4 @@
-// §7.10 Origin guard (§6.2 step 0)
+// §7.10 Origin guard (§6.2 step 1)
 import crypto from 'node:crypto';
 import config from '../config.js';
 import { ApiError } from '../lib/errors.js';

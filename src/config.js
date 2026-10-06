@@ -49,13 +49,22 @@ function readJwtSecret() {
   return secret;
 }
 
+// §4, §7.9: optional, but 10–72 characters whenever set
+function readBootstrapAdminPassword() {
+  const password = process.env.BOOTSTRAP_ADMIN_PASSWORD || '';
+  if (password !== '' && (password.length < 10 || password.length > 72)) {
+    fail('BOOTSTRAP_ADMIN_PASSWORD must be 10 to 72 characters long.');
+  }
+  return password;
+}
+
 const config = {
   port: readPort(),
   mongodbUri: readMongoUri(),
   publicBaseUrl: readPublicBaseUrl(),
   jwtSecret: readJwtSecret(),
   bootstrapAdminUsername: process.env.BOOTSTRAP_ADMIN_USERNAME?.trim() || 'hq.admin',
-  bootstrapAdminPassword: process.env.BOOTSTRAP_ADMIN_PASSWORD || '',
+  bootstrapAdminPassword: readBootstrapAdminPassword(),
   originSecret: process.env.ORIGIN_SECRET || '',
 };
 
