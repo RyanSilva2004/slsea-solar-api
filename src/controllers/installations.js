@@ -1,6 +1,6 @@
 // EP6 /installations, EP7 /installations/{installation-id}, EP12 device credential
 import { latestReadings, reportingStatus } from '../lib/derived.js';
-import { ApiError } from '../lib/errors.js';
+import { ApiError, fieldError } from '../lib/errors.js';
 import {
   districtInArea,
   districtOfInstallation,
@@ -185,9 +185,19 @@ export async function deleteInstallation(req, res) {
   res.json(represent.installation(installation));
 }
 
+// §9 EP12: a non-empty request body → 400 40001
+function rejectBody(req) {
+  const length = Number(req.get('Content-Length') ?? 0);
+  if (length > 0 || req.get('Transfer-Encoding') !== undefined) {
+    const message = 'This request takes no body.';
+    throw new ApiError(40001, message, { errors: [fieldError(40001, message)] });
+  }
+}
+
 // EP12 POST: §7.7 a new secret replaces any old one; updated_at is not changed
 export async function issueCredential(req, res) {
   readQuery(req, []);
+  rejectBody(req);
   const installation = await findInstallation(req);
   if (installation.status === 'DECOMMISSIONED') {
     throw new ApiError(40304, 'A device credential cannot be issued for a decommissioned installation.');

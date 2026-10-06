@@ -307,6 +307,23 @@ test('credential: GET -> 405; outside the area -> 404; analyst -> 403 40301', as
   assertError(analyst, 403, 40301);
 });
 
+test('credential with a request body -> 400 40001 before the installation is looked up', async () => {
+  const { installation } = await createInstallation();
+  const path = `/installations/${installation.installation_id}/device-credential`;
+
+  const json = await api('POST', path, { token: officer, body: {} });
+  assertError(json, 400, 40001);
+  assert.equal(json.headers.get('cache-control'), null);
+  const text = await api('POST', path, { token: officer, body: 'x', headers: { 'Content-Type': 'text/plain' } });
+  assertError(text, 400, 40001);
+  const outside = '/installations/INS-000064/device-credential';
+  assertError(await api('POST', outside, { token: officer, body: {} }), 400, 40001);
+
+  // no body is accepted
+  const ok = await issueCredential(installation.installation_id);
+  assert.equal(ok.status, 200, ok.text);
+});
+
 test('decommission via PUT -> device token 401 40102, /token 401 40103, credential 403 40304', async () => {
   const { installation, etag } = await createInstallation();
   const id = installation.installation_id;
