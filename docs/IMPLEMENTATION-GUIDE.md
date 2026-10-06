@@ -532,11 +532,12 @@ Every 4xx and 5xx body:
 | `Allow` | every 405 |
 | `WWW-Authenticate` | every 401 (values in §7.2, §7.4) |
 | `Retry-After` (whole seconds) | every 429 |
-| `Cache-Control: no-store` + `Pragma: no-cache` | `/token`, device credential, password responses |
+| `Cache-Control: no-store` + `Pragma: no-cache` | every `/token` response; device credential 200 (EP12); password 200 (EP15) |
 | `X-Content-Type-Options: nosniff` | every response (set by `security-headers.js`) |
 | `Strict-Transport-Security: max-age=31536000` | every response when `PUBLIC_BASE_URL` starts with `https://` (set by `security-headers.js`) |
 
 - No CORS headers are sent (no `Access-Control-*` headers on any response).
+- A DELETE 200 and the action POSTs that return 200 (EP12, EP15) carry no `ETag` or `Last-Modified`.
 
 ---
 
@@ -849,7 +850,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 
 **POST** — JSON body
 - Body exactly: `name`, `username`, `password`, `role`, `jurisdiction_level`, `district_id`.
-  - `name`: string, 1–100 characters after trimming.
+  - `name`: string, 1–100 characters after trimming; stored and returned trimmed.
   - `username`: `^[a-z0-9._-]{3,32}$`.
   - `password`: string, 10–72 characters.
   - `role`, `jurisdiction_level`: enums. `district_id`: existing district.
@@ -862,7 +863,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 - Scope `users:manage`. Unknown id → 404 `40401`.
 
 **PUT** — JSON body, `If-Match` required
-- Body exactly: `name`, `username`, `role`, `jurisdiction_level`, `district_id` (all required; rules as EP13). `password` present → 400 `40001`.
+- Body exactly: `name`, `username`, `role`, `jurisdiction_level`, `district_id` (all required; rules as EP13, `name` stored trimmed). `password` present → 400 `40001`.
 - Order: body (400) → not found (404) → `If-Match` (403 / 412) → target is the caller (403 `40305`) → username taken by another user (409 `40904`).
 - Save, `updated_at = now`. Response 200.
 
@@ -875,12 +876,12 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
   - Body exactly `current_password`, `new_password` → else 400 `40001`.
   - `current_password` wrong → 403 `40307`.
   - `new_password` 10–72 chars and different from the current one → else 400 `40001`.
-- **Another account:**
-  - Caller lacks `users:manage` → 403 `40308` (checked before looking the user up).
-  - Unknown user → 404 `40401`.
+- **Another account** — order: 40308 → body (400) → unknown user (404):
+  - Caller lacks `users:manage` → 403 `40308`.
   - Body exactly `new_password` (10–72 chars) → else 400 `40001`.
+  - Unknown user → 404 `40401`.
 - Save new hash, `password_changed_at = updated_at = now`.
-- Response 200 (`Cache-Control: no-store`, `Pragma: no-cache`):
+- Response 200 (`Cache-Control: no-store`, `Pragma: no-cache`; errors do not carry them):
   ```json
   { "user_id": "7c2d…", "password_changed_at": "2026-10-04T08:20:11.000Z" }
   ```
@@ -1144,3 +1145,6 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 34 | 2026-10-07 | L3a (review) | §12, §13 | New step L3a and `02b-hardening.test.js`; rate-limit tests use isolated keys; L4–L7, L10, L11, D1, D2 checks extended |
 | 35 | 2026-10-07 | L5 | §13 L3a | `02b` no longer has the "3 failures, success, 3 more failures" reset test |
 | 36 | 2026-10-07 | L5 | §13 L5 | `04-users` adds the rate-limit reset test: `probe-reset-<random>`, 9 failures, success, 9 + 1 failures → 401, 11th → 429 `42901`, user deleted |
+| 37 | 2026-10-07 | L5 (review) | §9 EP15 | Another account: order 40308 → body (400) → unknown user (404) |
+| 38 | 2026-10-07 | L5 (review) | §9 EP13, EP14 | `name` is trimmed and stored trimmed |
+| 39 | 2026-10-07 | L5 (review) | §6.11, §9 EP15 | EP15 sends `no-store`/`no-cache` only on its 200; DELETE 200 and action POST 200s (EP12, EP15) carry no `ETag`/`Last-Modified` |
