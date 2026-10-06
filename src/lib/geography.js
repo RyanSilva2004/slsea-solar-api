@@ -59,3 +59,24 @@ export function areaOf(user) {
   }
   return new Set([user.district_id]);
 }
+
+// §7.6: a region is inside the area if every one of its districts is in the area set
+export function districtInArea(districtId, area) {
+  return area.has(districtId);
+}
+
+export function provinceInArea(provinceId, area) {
+  return (districtsByProvince.get(provinceId) ?? []).every((districtId) => area.has(districtId));
+}
+
+export function substationInArea(substationId, area) {
+  return area.has(districtOfSubstation.get(substationId));
+}
+
+export function installationInArea(installation, area) {
+  return area.has(districtOfInstallation(installation));
+}
+
+export function substationsOfArea(area) {
+  return [...area].flatMap((districtId) => substationsByDistrict.get(districtId) ?? []);
+}

@@ -1,8 +1,10 @@
 // §9 Body validators: each reader lists every field problem and throws one 400 40001
 import { ApiError, fieldError } from './errors.js';
-import { districtsById } from './geography.js';
+import { districtsById, substationsById } from './geography.js';
 
 const USERNAME_PATTERN = /^[a-z0-9._-]{3,32}$/;
+const METER_PATTERN = /^[A-Z0-9-]{3,32}$/;
+const STATUSES = ['ACTIVE', 'DECOMMISSIONED'];
 const ROLES = ['ANALYST', 'INSTALLATION_OFFICER', 'ADMIN'];
 const LEVELS = ['NATIONAL', 'PROVINCIAL', 'DISTRICT'];
 
@@ -80,6 +82,36 @@ export function readUserBody(body, { withPassword }) {
   };
   if (withPassword) {
     values.password = body.password;
+  }
+  return values;
+}
+
+// §9 EP6
+const installationRules = {
+  meter_id: (value) =>
+    typeof value === 'string' && METER_PATTERN.test(value)
+      ? null
+      : 'meter_id must be 3 to 32 characters of A-Z, 0-9 or "-".',
+  capacity_kw: (value) =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 1000
+      ? null
+      : 'capacity_kw must be greater than 0 and at most 1000.',
+  substation_id: (value) =>
+    Number.isInteger(value) && substationsById.has(value) ? null : 'substation_id must be the id of an existing substation.',
+};
+
+const statusRule = (value) =>
+  STATUSES.includes(value) ? null : `status must be one of: ${STATUSES.join(', ')}.`;
+
+// EP6 POST and EP7 PUT (withStatus) → { meter_id, capacity_kw, substation_id, status? }
+export function readInstallationBody(body, { withStatus }) {
+  const rules = withStatus ? { ...installationRules, status: statusRule } : installationRules;
+  const messages = withStatus ? {} : { status: 'status cannot be set on create.' };
+  throwIfInvalid([...unknownFields(body, Object.keys(rules), messages), ...checkRules(body, rules)]);
+
+  const values = { meter_id: body.meter_id, capacity_kw: body.capacity_kw, substation_id: body.substation_id };
+  if (withStatus) {
+    values.status = body.status;
   }
   return values;
 }

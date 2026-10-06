@@ -619,6 +619,7 @@ Every 4xx and 5xx body:
   - region in a path or filter, or a substation in a filter or body, outside the area → 403 `40302`
 - Provinces, districts and substations are readable by every user (no area check).
 - EP2, EP3, EP4 lists and members are served from this cache (filtering and paging in memory).
+- Area helpers in `lib/geography.js`: `districtInArea`, `provinceInArea`, `substationInArea`, `installationInArea` (each `(id or installation, area)` → boolean) and `substationsOfArea(area)` → substation ids.
 
 ### 7.7 Device credentials
 
@@ -678,6 +679,8 @@ Every 4xx and 5xx body:
 ## 8. Derived values (`lib/derived.js`)
 
 Constants: reporting interval 15 min; silent threshold 30 min; Sri Lanka offset +05:30 (no DST).
+
+- Exports used by EP6: `latestReadings(ids)` → map id → reading; `reportingStatus(installation, latest, now)`.
 
 - **Latest reading per installation:** aggregation on `readings`: `$match { installation_id: { $in: ids } }` → `$sort { installation_id: 1, recorded_at: -1 }` → `$group { _id: '$installation_id', doc: { $first: '$$ROOT' } }`. Returns a map id → reading.
 - **Reporting status** (`now` = request time):
@@ -1071,8 +1074,8 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 | L3 Token + authentication | ☑ | 2026-10-06 | 6fd605f | `POST /token` password + client-credentials grants; `lib/tokens.js` (HS256, iss/aud, role scopes), `lib/secrets.js`, `authenticate.js`, `require-scope.js`, `areaOf`; `02-token.test.js` 16/16 (device grant with `INS-000004` ran) |
 | L3a Auth hardening | ☑ | 2026-10-07 | d1d96eb | `security-headers.js` (step 0), `tokenLimiter` (10 failures / 15 min per key, success resets, keyless requests skipped), `DUMMY_HASH` equal-time login, `lib/audit.js` (`token_rejected`, `rate_limited`), 16kb form/JSON limits, 429 `42901`, `BOOTSTRAP_ADMIN_PASSWORD` 10–72 check; filter-validation review found nothing to fix; `npm test` 33 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process |
 | L4 Geography | ☑ | 2026-10-07 | 51e45ec | `routes/geography.js` + `controllers/geography.js`: EP2–EP4 lists (filters `province-id`, `district-id`, paging, links) and members from the geography cache; `authenticate` → `requireScope('geography:read')`; conditional GET with collection-latest / member `updated_at`; `03-geography.test.js` 17/17; `npm test` 50 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process |
-| L5 Users + passwords | ☑ | 2026-10-07 | | `routes/users.js` + `controllers/users.js`: EP13 list (filters `district-id`, `role`, `jurisdiction-level`, sorted by `username`) and create; EP14 GET/PUT/DELETE with `If-Match` and own-account 40305; EP15 own change (current password checked) and admin reset, both revoke older tokens; `lib/validation.js` user/password body rules (every field problem listed); `scripts/create-test-accounts.js` created all 7 accounts, second run skipped all 7; `04-users.test.js` 19/19 (incl. rate-limit reset test moved from `02b`); `npm test` 68 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on four runs in a row on one server process |
-| L6 Installations + credentials | ☐ | | | |
+| L5 Users + passwords | ☑ | 2026-10-07 | a1e9c5e | `routes/users.js` + `controllers/users.js`: EP13 list (filters `district-id`, `role`, `jurisdiction-level`, sorted by `username`) and create; EP14 GET/PUT/DELETE with `If-Match` and own-account 40305; EP15 own change (current password checked) and admin reset, both revoke older tokens; `lib/validation.js` user/password body rules (every field problem listed); `scripts/create-test-accounts.js` created all 7 accounts, second run skipped all 7; `04-users.test.js` 19/19 (incl. rate-limit reset test moved from `02b`); `npm test` 68 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on four runs in a row on one server process |
+| L6 Installations + credentials | ☑ | 2026-10-07 | | `routes/installations.js` + `controllers/installations.js`: EP6 list (area installations loaded once, filters `province-id`, `district-id`, `substation-id`, `status`, `reporting-status` and paging in memory; region filter outside the area 403 `40302`) and create; EP7 GET/PUT/DELETE with `If-Match`, decommissioning clears the credential, DELETE refused when readings exist; EP12 credential issue (`no-store`, replaces the old secret, 403 `40304` when decommissioned); `lib/validation.js` installation body rules; `lib/derived.js` latest reading + reporting status; area helpers in `lib/geography.js`; `05-installations.test.js` 23/23; `npm test` 91 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on five runs in a row on one server process; no `TEST-` installation left afterwards, seeded installations unchanged |
 | L7 Readings | ☐ | | | |
 | L8 Overview + region readings | ☐ | | | |
 | L9 Generation summaries | ☐ | | | |
@@ -1102,6 +1105,7 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | # | Step | Question | Answer (from the user) |
 |---|---|---|---|
 | 1 | L3a | `tokenLimiter` counts every response ≥ 400. Each `npm test` run sends 4 such responses keyed `password:hq.admin` (2 wrong passwords in `02-token`, 1 missing password in `02-token`, 1 wrong password in `02b`) and 4 keyed `invalid` (missing/unknown `grant_type` and device grant without `Authorization` in `02-token`, `username[$ne]` in `02b`). A third run within 15 minutes on the same server process makes `hq.admin` hit 429, which conflicts with §12 "real accounts … are never limited". Restart the server between runs, change the tests to use `probe-` usernames, or something else? | Resolved by §7.11 reset-on-success and skip-malformed (§17 #29–31) |
+| 2 | L6 | EP12 says "No body". A body sent with the request is currently ignored (not parsed, no error). Keep that, or answer a non-empty body with 400 `40001`? | |
 
 ---
 
@@ -1148,3 +1152,5 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 37 | 2026-10-07 | L5 (review) | §9 EP15 | Another account: order 40308 → body (400) → unknown user (404) |
 | 38 | 2026-10-07 | L5 (review) | §9 EP13, EP14 | `name` is trimmed and stored trimmed |
 | 39 | 2026-10-07 | L5 (review) | §6.11, §9 EP15 | EP15 sends `no-store`/`no-cache` only on its 200; DELETE 200 and action POST 200s (EP12, EP15) carry no `ETag`/`Last-Modified` |
+| 40 | 2026-10-07 | L6 | §7.6 | Area helpers `districtInArea`, `provinceInArea`, `substationInArea`, `installationInArea`, `substationsOfArea` in `lib/geography.js` |
+| 41 | 2026-10-07 | L6 | §8 | `lib/derived.js` exports `latestReadings(ids)` and `reportingStatus(installation, latest, now)` |

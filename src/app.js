@@ -8,6 +8,7 @@ import toolingRouter from './routes/tooling.js';
 import tokenRouter from './routes/token.js';
 import geographyRouter from './routes/geography.js';
 import usersRouter from './routes/users.js';
+import installationsRouter from './routes/installations.js';
 
 const app = express();
 
@@ -26,6 +27,7 @@ app.use(negotiation);
 app.use('/solar/v1.0', tokenRouter);
 app.use('/solar/v1.0', geographyRouter);
 app.use('/solar/v1.0', usersRouter);
+app.use('/solar/v1.0', installationsRouter);
 app.use(notFound);
 app.use(errorHandler);
 
