@@ -1101,7 +1101,7 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 
 | # | Step | Question | Answer (from the user) |
 |---|---|---|---|
-| 1 | L3a | `tokenLimiter` counts every response ≥ 400. Each `npm test` run sends 4 such responses keyed `password:hq.admin` (2 wrong passwords in `02-token`, 1 missing password in `02-token`, 1 wrong password in `02b`) and 4 keyed `invalid` (missing/unknown `grant_type` and device grant without `Authorization` in `02-token`, `username[$ne]` in `02b`). A third run within 15 minutes on the same server process makes `hq.admin` hit 429, which conflicts with §12 "real accounts … are never limited". Restart the server between runs, change the tests to use `probe-` usernames, or something else? || A success resets its key; requests with no usable key are skipped (no `invalid` key); tests must pass on a third and fourth run in a row. Moved to §7.11, §12, §13 L3a (§17 #29–31) |
+| 1 | L3a | `tokenLimiter` counts every response ≥ 400. Each `npm test` run sends 4 such responses keyed `password:hq.admin` (2 wrong passwords in `02-token`, 1 missing password in `02-token`, 1 wrong password in `02b`) and 4 keyed `invalid` (missing/unknown `grant_type` and device grant without `Authorization` in `02-token`, `username[$ne]` in `02b`). A third run within 15 minutes on the same server process makes `hq.admin` hit 429, which conflicts with §12 "real accounts … are never limited". Restart the server between runs, change the tests to use `probe-` usernames, or something else? | Resolved by §7.11 reset-on-success and skip-malformed (§17 #29–31) |
 
 ---
 
@@ -1140,6 +1140,6 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 29 | 2026-10-07 | L3a | §7.11 | Successful token response resets its key (`resetKey`); requests with no usable username / installation id, or another `grant_type`, are skipped; no `invalid` key |
 | 30 | 2026-10-07 | L3a | §12 | A third and fourth full test run in a row on the same server process pass without 429 |
 | 31 | 2026-10-07 | L3a | §13 L3a | `02b` adds: success resets the count after 3 failures; 15 missing-`grant_type` requests all 400 |
-| 27 | 2026-10-07 | L3a (review) | §12, §13 | New step L3a and `02b-hardening.test.js`; rate-limit tests use isolated keys; L4–L7, L10, L11, D1, D2 checks extended |
 | 32 | 2026-10-07 | L4 | §7.6 | EP2–EP4 lists and members are served from the geography cache (in-memory filtering and paging) |
 | 33 | 2026-10-07 | L4 | §13 L4 | `03-geography.test.js` reads with the bootstrap admin token; device test uses `INS-000004` from `seed/seed-output/test-device.json`, skipped if missing |
+| 34 | 2026-10-07 | L3a (review) | §12, §13 | New step L3a and `02b-hardening.test.js`; rate-limit tests use isolated keys; L4–L7, L10, L11, D1, D2 checks extended |
