@@ -358,7 +358,7 @@ Declare exactly these in the schemas (they already exist from the seed for the f
 | 7 | controller | in this order: query/body validation (400) → target exists and is in the area (404 / 403) → `If-Match` (403 `40303` / 412) → business rules (409 / 403) → respond |
 
 - `/token` uses its own body handling (§7.2) and no step 4–5.
-- `json-body.js` = content-type check, then `express.json({ limit: '100kb' })`. Parse errors → 400 `40001` "Malformed JSON body".
+- `json-body.js` = content-type check, then `express.json({ limit: '100kb' })`. Parse errors → 400 `40001` "Malformed JSON body". Body over 100kb → 400 `40001`. Unsupported charset or content encoding → 415 `41501`.
 - A JSON body must be a JSON object; anything else → 400 `40001`.
 - `error-handler.js` turns `ApiError` into the error body (§6.10). Any other error → log it, 500 `50001`, no stack trace.
 
@@ -391,6 +391,7 @@ Overview and summary shapes: §9 EP8, EP5.
 - `next` = same URL with `offset = offset + limit`, only if `offset + limit < count`, else `null`.
 - `previous` = same URL with `offset = max(0, offset − limit)`, only if `offset > 0`, else `null`.
 - Links = `PUBLIC_BASE_URL` + path after the base + every query parameter of the request, with `offset` and `limit` set explicitly.
+- `lib/pagination.js`: `paging(query)` → `{ offset, limit }` with defaults; `collection(req, { count, items, offset, limit })` → the envelope.
 - Offset beyond `count` → 200 with empty `items`.
 - An empty result is 200 with `count: 0` and `items: []`, never 404.
 
@@ -404,6 +405,7 @@ Overview and summary shapes: §9 EP8, EP5.
 - `sort`: `recorded-at:desc` (default) | `recorded-at:asc` → else 400 `40002`.
 - `from` (inclusive), `to` (exclusive): timestamps per §6.6 → else 400 `40003`. Both given and `from >= to` → 400 `40003`.
 - Several filters combine with AND.
+- `lib/query.js`: `readQuery(req, allowedNames)` → `{ name: parsedValue }` for the parameters present. Parsing stops at the first invalid parameter; `error[]` holds that one problem.
 
 ### 6.6 Timestamps
 
@@ -443,6 +445,7 @@ Every successful GET (200) sends `ETag` and `Last-Modified`.
 - Header is `*`, or any comma-separated value equals the ETag of the **current** representation (same function as GET) → continue.
 - Otherwise → 412 `41201`.
 - Checked after the target is found (a repeated DELETE gives 404, not 412).
+- Helpers in `lib/http-cache.js`: `checkIfMatch(req, currentBody)` (throws `40303` / `41201`); `sendUpdated(res, body, lastModified)` for a successful PUT.
 - Successful PUT → 200, body = new representation, new `ETag` and `Last-Modified`.
 
 ### 6.9 Create responses
@@ -451,6 +454,7 @@ Every POST that creates a record:
 - 201, body = the new representation.
 - `Location` and `Content-Location` = absolute URL of the new resource.
 - `ETag` and `Last-Modified` as for a GET of that resource.
+- Helper: `sendCreated(res, body, pathAfterBase, lastModified)` in `lib/http-cache.js`.
 
 ### 6.10 Error body and catalogue
 
@@ -468,6 +472,7 @@ Every 4xx and 5xx body:
 
 - `code`: from the table below. `description`: the fixed short title from the table. `message`: detailed text for this case. `more_info`: always `PUBLIC_BASE_URL + "/docs"`. `error`: one entry per field problem; `[]` when there is none.
 - All five fields are always present.
+- Thrown as `new ApiError(code, message, { errors, headers })` (`lib/errors.js`); `headers` carries `Allow` / `WWW-Authenticate`.
 
 | HTTP | Code | Description (fixed) | Used when |
 |---|---|---|---|
@@ -893,7 +898,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 ## 12. Tests (`tests/`)
 
 - Node's built-in runner (`node:test`, `node:assert/strict`) and global `fetch`. The server must already be running.
-- `tests/helpers.js`: base URL (`TEST_BASE_URL`), `api(method, path, { token, headers, body, form })`, `userToken(username)` (cached), `deviceToken(id, secret)`.
+- `tests/helpers.js`: base URL (`TEST_BASE_URL`), `api(method, path, { token, headers, body, form })`, `userToken(username)` (cached), `deviceToken(id, secret)`. `path` is relative to the base URL, or an absolute URL (tooling routes such as `GET /`).
 - Preconditions: database seeded; test accounts created (`npm run accounts`).
 - Write tests create their own installation in Colombo (via `colombo.officer`) with `meter_id` = `TEST-` + a unique suffix (e.g. timestamp), issue its credential and post readings with `recorded_at` inside the last hour.
 - Tests never modify or delete seeded installations (`INS-000001`–`INS-000240`), except read-only checks and refused operations (e.g. DELETE `INS-000003` → 409).
@@ -983,7 +988,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 |---|---|---|---|---|
 | L0 Clean repo + scaffold | ☑ | 2026-10-06 | 5248780 | Old files removed; scaffold, config check, `GET /` health; 5 runtime deps only |
 | L1 Database + start-up | ☑ | 2026-10-06 | b382a88 | 7 models + §5.2 indexes; counters 240 / 159312; geography 9/25/42; `hq.admin` created on first start, skipped on restart; seed indexes unchanged |
-| L2 HTTP foundation | ☐ | | | |
+| L2 HTTP foundation | ☑ | 2026-10-06 | COMMIT_L2 | Pipeline origin → tooling → negotiation → routers → 404 → error handler; `ApiError` + catalogue; json-body, http-cache, pagination, query, time, representations; `01-pipeline.test.js` 10/10 (origin guard run with `ORIGIN_SECRET` set) |
 | L3 Token + authentication | ☐ | | | |
 | L4 Geography | ☐ | | | |
 | L5 Users + passwords | ☐ | | | |
@@ -1022,4 +1027,11 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | # | Date | Step | Section | New statement |
 |---|---|---|---|---|
 | 1 | 2026-10-06 | L1 | §3 | `server.js` holds the bootstrap admin (§7.9) |
+| 2 | 2026-10-06 | L2 | §6.2 | JSON body over 100kb → 400 `40001`; unsupported charset/encoding → 415 `41501` |
+| 3 | 2026-10-06 | L2 | §6.4 | `lib/pagination.js` exports `paging(query)` and `collection(req, …)` |
+| 4 | 2026-10-06 | L2 | §6.5 | `readQuery(req, allowedNames)`; first invalid parameter stops parsing, one `error[]` entry |
+| 5 | 2026-10-06 | L2 | §6.8 | `checkIfMatch(req, currentBody)` and `sendUpdated(res, body, lastModified)` in `lib/http-cache.js` |
+| 6 | 2026-10-06 | L2 | §6.9 | `sendCreated(res, body, pathAfterBase, lastModified)` in `lib/http-cache.js` |
+| 7 | 2026-10-06 | L2 | §6.10 | Errors thrown as `new ApiError(code, message, { errors, headers })` |
+| 8 | 2026-10-06 | L2 | §12 | `api()` path may be an absolute URL (tooling routes) |
 | 2 | 2026-10-06 | L1 | §5.5 | Steps 2–6 each log one line (database, indexes, counters, geography, bootstrap) |
