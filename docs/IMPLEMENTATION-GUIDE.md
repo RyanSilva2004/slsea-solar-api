@@ -982,7 +982,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 | Step | Status | Date | Commit | Notes |
 |---|---|---|---|---|
 | L0 Clean repo + scaffold | ☑ | 2026-10-06 | 5248780 | Old files removed; scaffold, config check, `GET /` health; 5 runtime deps only |
-| L1 Database + start-up | ☑ | 2026-10-06 | COMMIT_L1 | 7 models + §5.2 indexes; counters 240 / 159312; geography 9/25/42; `hq.admin` created on first start, skipped on restart; seed indexes unchanged |
+| L1 Database + start-up | ☑ | 2026-10-06 | b382a88 | 7 models + §5.2 indexes; counters 240 / 159312; geography 9/25/42; `hq.admin` created on first start, skipped on restart; seed indexes unchanged |
 | L2 HTTP foundation | ☐ | | | |
 | L3 Token + authentication | ☐ | | | |
 | L4 Geography | ☐ | | | |
@@ -1005,7 +1005,7 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | # | Step | What was wrong | Spec section | Fix | Commit |
 |---|---|---|---|---|---|
 | 1 | L0 | `git log --all --oneline -- .env seed-output` returned no commits: `.env` and `seed-output/` were never committed; no secrets to rotate | §13 L0 | None needed; both git-ignored (§3.3) | — |
-| 2 | L1 | Bootstrap admin (own code) rejected a `BOOTSTRAP_ADMIN_PASSWORD` shorter than 10 characters; §7.9 only requires it to be present | §7.9 | Check reduced to "missing → exit" | COMMIT_L1 |
+| 2 | L1 | Bootstrap admin (own code) rejected a `BOOTSTRAP_ADMIN_PASSWORD` shorter than 10 characters; §7.9 only requires it to be present | §7.9 | Check reduced to "missing → exit" | b382a88 |
 
 ---
 
