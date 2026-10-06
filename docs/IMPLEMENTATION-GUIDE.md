@@ -71,7 +71,7 @@ This is the **only** specification for the build. Build exactly what is written 
 │   ├── seed_slsea.py                seed tool (DO NOT CHANGE)
 │   └── requirements.txt             pymongo>=4.6
 ├── src/
-│   ├── server.js                    start-up sequence (§5.5), then listen
+│   ├── server.js                    start-up sequence (§5.5) incl. bootstrap admin (§7.9), then listen
 │   ├── app.js                       Express app: pipeline order (§6.2), routers, 404/405, error handler
 │   ├── config.js                    reads and checks environment variables (§4)
 │   ├── models/                      one Mongoose model per collection (§5.1)
@@ -319,6 +319,7 @@ Declare exactly these in the schemas (they already exist from the seed for the f
 5. Load the geography cache (§7.6).
 6. Bootstrap the first admin (§7.9).
 7. Start listening on `PORT`. Log one line with the port and `PUBLIC_BASE_URL`.
+- Steps 2–6 each log one line: database name; number of models indexed; `installation_id` and `reading_id` counter values after raising; geography counts (provinces, districts, substations); bootstrap admin created or not.
 - Any failure in 1–6 → log the error and exit with code 1.
 
 ---
@@ -981,7 +982,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 | Step | Status | Date | Commit | Notes |
 |---|---|---|---|---|
 | L0 Clean repo + scaffold | ☑ | 2026-10-06 | 5248780 | Old files removed; scaffold, config check, `GET /` health; 5 runtime deps only |
-| L1 Database + start-up | ☐ | | | |
+| L1 Database + start-up | ☑ | 2026-10-06 | COMMIT_L1 | 7 models + §5.2 indexes; counters 240 / 159312; geography 9/25/42; `hq.admin` created on first start, skipped on restart; seed indexes unchanged |
 | L2 HTTP foundation | ☐ | | | |
 | L3 Token + authentication | ☐ | | | |
 | L4 Geography | ☐ | | | |
@@ -1004,6 +1005,7 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | # | Step | What was wrong | Spec section | Fix | Commit |
 |---|---|---|---|---|---|
 | 1 | L0 | `git log --all --oneline -- .env seed-output` returned no commits: `.env` and `seed-output/` were never committed; no secrets to rotate | §13 L0 | None needed; both git-ignored (§3.3) | — |
+| 2 | L1 | Bootstrap admin (own code) rejected a `BOOTSTRAP_ADMIN_PASSWORD` shorter than 10 characters; §7.9 only requires it to be present | §7.9 | Check reduced to "missing → exit" | COMMIT_L1 |
 
 ---
 
@@ -1019,4 +1021,5 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 
 | # | Date | Step | Section | New statement |
 |---|---|---|---|---|
-| | | | | |
+| 1 | 2026-10-06 | L1 | §3 | `server.js` holds the bootstrap admin (§7.9) |
+| 2 | 2026-10-06 | L1 | §5.5 | Steps 2–6 each log one line (database, indexes, counters, geography, bootstrap) |
