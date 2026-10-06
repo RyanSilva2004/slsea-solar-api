@@ -1,0 +1,28 @@
+{
+  "name": "slsea-solar-api",
+  "version": "0.1.0",
+  "description": "SLSEA Real-Time Solar Generation Data API — NB6007CEM Web API Development coursework",
+  "private": true,
+  "type": "commonjs",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "seed": "node scripts/generate-seed.js",
+    "seed:load": "node scripts/load-seed.js",
+    "db:check": "node scripts/db-check.js",
+    "simulate": "node scripts/simulate.js",
+    "test:local": "npx --yes newman@6 run postman/slsea-solar-api.postman_collection.json -e postman/local.private.postman_environment.json",
+    "test:prod": "npx --yes newman@6 run postman/slsea-solar-api.postman_collection.json -e postman/production.private.postman_environment.json"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^9.11.0",
+    "swagger-ui-express": "^5.0.1"
+  }
+}
