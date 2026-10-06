@@ -1,20 +1,11 @@
-'use strict';
+import config from './config.js';
+import app from './app.js';
 
-const { config } = require('./config');
-const app = require('./app');
-
-// Phase L2 adds: connect to MongoDB (config.mongodbUri) and sync indexes before listening.
-// Phase L4 adds: create hq.admin when the users collection is empty (guide §3.4).
-
-const server = app.listen(config.port, () => {
-  console.log(`slsea-solar-api listening on port ${config.port} (${config.env})`);
+// §5.5 step 7
+app.listen(config.port, (err) => {
+  if (err) {
+    console.error(err);
+    process.exit(1);
+  }
+  console.log(`Listening on port ${config.port} (${config.publicBaseUrl})`);
 });
-
-// Graceful shutdown: Ctrl+C, nodemon restarts and `pm2 reload` let in-flight requests finish.
-function shutdown(signal) {
-  console.log(`${signal} received — closing the server`);
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(1), 4000).unref();
-}
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));

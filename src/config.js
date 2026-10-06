@@ -1,49 +1,62 @@
-'use strict';
+// §4 Environment variables
 
-// Settings come from environment variables (04 AR9).
-// Locally they are read from .env (git-ignored) with Node's built-in loader,
-// so no dotenv package is needed. Real environment variables take precedence.
-const path = require('node:path');
-
-try {
-  process.loadEnvFile(path.join(__dirname, '..', '.env'));
-} catch (err) {
-  if (err.code !== 'ENOENT') throw err; // no .env file is fine (e.g. CI)
+function fail(message) {
+  console.error(`Configuration error: ${message}`);
+  process.exit(1);
 }
 
-const toInt = (value, fallback) =>
-  value === undefined || value === '' ? fallback : Number.parseInt(value, 10);
-
-const publicBaseUrl = (process.env.PUBLIC_BASE_URL || 'http://localhost:3000').replace(/\/+$/, '');
-const basePath = '/solar/v1.0'; // feature code + major.minor version (03 U2)
-
-const config = Object.freeze({
-  env: process.env.NODE_ENV || 'development',
-  port: toInt(process.env.PORT, 3000),
-  mongodbUri: process.env.MONGODB_URI || '',
-  publicBaseUrl,
-  basePath,
-  jwt: Object.freeze({
-    secret: process.env.JWT_SECRET || '',
-    ttlMinutes: toInt(process.env.JWT_TTL_MINUTES, 60),
-    issuer: `${publicBaseUrl}${basePath}`,
-    audience: 'slsea-solar-api',
-  }),
-  bootstrapAdmin: Object.freeze({
-    username: process.env.BOOTSTRAP_ADMIN_USERNAME || 'hq.admin',
-    password: process.env.BOOTSTRAP_ADMIN_PASSWORD || '',
-    name: process.env.BOOTSTRAP_ADMIN_NAME || 'SLSEA Head Office Admin',
-  }),
-  originSecret: process.env.ORIGIN_SECRET || '', // empty = origin guard off (local)
-});
-
-// Call from the phase that first needs a setting, e.g. requireSettings('MONGODB_URI') in L2,
-// requireSettings('JWT_SECRET', 'BOOTSTRAP_ADMIN_PASSWORD') in L4. Fails fast with a clear message.
-function requireSettings(...names) {
-  const missing = names.filter((name) => !process.env[name]);
-  if (missing.length > 0) {
-    throw new Error(`Missing environment variables: ${missing.join(', ')} (see .env.example)`);
+function required(name) {
+  const value = process.env[name];
+  if (value === undefined || value.trim() === '') {
+    fail(`${name} is required.`);
   }
+  return value.trim();
 }
 
-module.exports = { config, requireSettings };
+function readPort() {
+  const text = required('PORT');
+  const port = Number(text);
+  if (!/^[0-9]+$/.test(text) || port < 1 || port > 65535) {
+    fail('PORT must be an integer between 1 and 65535.');
+  }
+  return port;
+}
+
+function readMongoUri() {
+  const uri = required('MONGODB_URI');
+  if (!uri.startsWith('mongodb://') && !uri.startsWith('mongodb+srv://')) {
+    fail('MONGODB_URI must start with mongodb:// or mongodb+srv://.');
+  }
+  return uri;
+}
+
+function readPublicBaseUrl() {
+  const url = required('PUBLIC_BASE_URL');
+  if (!URL.canParse(url) || !/^https?:\/\//.test(url)) {
+    fail('PUBLIC_BASE_URL must be an absolute http(s) URL.');
+  }
+  if (url.endsWith('/')) {
+    fail('PUBLIC_BASE_URL must not end with a slash.');
+  }
+  return url;
+}
+
+function readJwtSecret() {
+  const secret = required('JWT_SECRET');
+  if (secret.length < 32) {
+    fail('JWT_SECRET must be at least 32 characters.');
+  }
+  return secret;
+}
+
+const config = {
+  port: readPort(),
+  mongodbUri: readMongoUri(),
+  publicBaseUrl: readPublicBaseUrl(),
+  jwtSecret: readJwtSecret(),
+  bootstrapAdminUsername: process.env.BOOTSTRAP_ADMIN_USERNAME?.trim() || 'hq.admin',
+  bootstrapAdminPassword: process.env.BOOTSTRAP_ADMIN_PASSWORD || '',
+  originSecret: process.env.ORIGIN_SECRET || '',
+};
+
+export default config;

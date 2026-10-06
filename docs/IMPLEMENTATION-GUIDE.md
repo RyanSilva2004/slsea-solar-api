@@ -1,857 +1,1022 @@
-# SLSEA Solar Generation Data API — Implementation Guide
+# SLSEA Solar Generation API — Implementation Guide
 
-> Used by the coding agent while building. Update the **Status** columns (4.2 and 6) as work is done.
-> Design reasons live in `docs/01-data-model-design-log.md`, `docs/02-scope-decisions.md` and `docs/03-resource-model-and-uris.md`.
-
----
-
-## 1. Business Context
-
-This API serves real-time and historical generation data from rooftop solar installations across Sri Lanka for the **Sri Lanka Sustainable Energy Authority (SLSEA)**. Each installation has a smart meter or inverter that pushes a reading every 15 minutes.
-
-The API serves two kinds of client:
-
-- **Devices (write-clients)** — each device logs in as its installation and pushes generation readings for that installation only. It can do nothing else.
-- **SLSEA users (read-clients)** — read data inside their jurisdiction (district, province or national):
-  - **Analysts** — read installations, readings and summaries.
-  - **Installation officers** — also register, correct, decommission and remove installations, and issue device credentials.
-  - **Admins** (always national) — manage user accounts only.
-
-Backend only. The OpenAPI (Swagger) surface is the interface.
+This is the **only** specification for the build. Build exactly what is written here.
 
 ---
 
-## 2. Assumptions & Clarifications
+## 0. Rules for the agent
 
-| # | Assumption | Rationale |
-|---|---|---|
-| 1 | Stack: Node.js (24 LTS) + Express 5; `nodemon` in development, `pm2` in production | Lecture help points (keep the service alive) |
-| 1c | Deployment: **AWS API Gateway (HTTP API, HTTPS) → one EC2 instance (Ubuntu 24.04) running the app under pm2** | Lecture help points: TLS at the gateway, never a plain-text URL, not everything on one exposed instance. Design reasons in `docs/04-architecture-and-deployment.md` |
-| 1a | Database: **MongoDB** (document database), accessed with Mongoose — local MongoDB in development, **MongoDB Atlas** in production | Object-based storage; managed, separate from the app server |
-| 1b | Seed data is generated as JSON files by `npm run seed`, then **loaded by a script** (`npm run seed:load`) into whichever database `MONGODB_URI` names | Visible and repeatable files; one command fills local or Atlas; no hidden start-up loading. The brief only requires a plausible, FK-consistent dataset (B§4), not a loading method |
-| 1d | **Build and accept everything locally first**, then deploy (section 6) | Problems are found where they are cheap to fix |
-| 2 | Base path is `/solar/v1.0` | Feature code + major.minor version |
-| 3 | JSON only; snake_case fields. Only exception: the `/token` **request** body is form-encoded | OAuth 2.0 (RFC 6749) defines the token request that way; Swagger's Authorize button needs it |
-| 4 | Geography (provinces, districts, substations) is read-only reference data | Loaded by the seeder; never written through the API |
-| 5 | Readings are append-only | Never updated or deleted |
-| 6 | The meter id is an attribute of the installation; there is no device table | Device credentials are columns on the installation |
-| 7 | Users are **not** seed data | `hq.admin` is created at start-up if no user exists; every other account, including test accounts, through `POST /users` (3.4) |
-| 8 | An ADMIN is always at level NATIONAL | Enforced by the store on every write |
-| 9 | "Today" is the calendar day in `Asia/Colombo`; all timestamps are stored and returned in UTC | No daylight saving in Sri Lanka |
-| 10 | A device reports every 15 minutes, including 0 kW at night | Lets "silent" be told apart from "no sun" |
-| 11 | The **test device** is a normal (not edge-case) Colombo installation | Visible to `colombo.analyst` and `colombo.officer`; used by the Postman collection |
+- This file is the single source of truth. Do not read or rely on any other design document.
+- Build the steps in §13 **in order**, one at a time. Do not start a step until the previous one is marked done.
+- A step is done when every "Done when" item passes, its tests are added, and it is committed.
+- After each step, update this file:
+  - §14 Progress — status, date, commit hash, short note.
+  - §15 Issues — every bug or wrong output you found and fixed in code (yours included).
+  - §16 Open questions — anything unclear or contradictory. Do not guess; ask the user.
+  - §17 Change log — every change to this specification (rules below).
 
-**Open questions**
+### 0.1 Keeping this specification current
 
-- Where the device simulator runs (04 O1) — decided at D5, not needed before.
-- *(Resolved)* Meter swap: the replacement meter continues the old counter (commissioning rule, DM-A3), so the counter check has no special case.
+- When anything decided during the build differs from or adds to this file (an answer to an open question, a corrected rule, a new file name, a library constraint, a dropped feature), **edit the section it belongs to** so the section states the rule as it now stands.
+- Write statements only: what must be built and how it behaves. No reasons, no history, no "previously" in the section.
+- Add one line per edit to §17: date, step, section, the new statement (short).
+- Later steps follow the edited sections. Nothing in §15–§17 overrides a section; the section is always the current rule.
+- §16 answers are moved into the relevant section (and logged in §17) before the step continues.
+- Commit at least once per step. Message format: `L4: geography endpoints` (step id + short summary).
+- Do not add endpoints, fields, query parameters, error codes, dependencies or features that are not in this file.
+- Never change anything in `seed/`.
+- Never commit `.env` or `seed-output/`.
+- The database is the seeded **MongoDB Atlas** cluster, used from the first step. Never drop a collection, never delete or change seeded records directly in the database, and never run the seed tool.
+- Write tests (`npm test`) may run against Atlas. Every installation they create uses a `meter_id` starting with `TEST-`. The user re-seeds before submission, which removes test data.
+- Keep code plain and readable. Small functions. Comments only where they point to a section of this file (e.g. `// §6.7`).
+- Use ES modules (`import`/`export`).
 
 ---
 
-## 3. Data Model
+## 1. What is being built
 
-### 3.1 Entity-Relationship Overview
+- A JSON REST API for the Sri Lanka Sustainable Energy Authority (SLSEA).
+- Smart meters (devices) **write** generation readings for their own installation only.
+- SLSEA users **read** data inside their jurisdiction. Officers also manage installations. Admins manage user accounts.
+- Base URL path: `/solar/v1.0`.
+- MongoDB already holds the seeded data: provinces, districts, substations, installations, readings. Users are created through the API.
+
+---
+
+## 2. Stack
+
+| Item | Choice |
+|---|---|
+| Runtime | Node.js 24 LTS, `"type": "module"` |
+| Web framework | `express` ^5 |
+| Database | MongoDB through `mongoose` ^8 |
+| Tokens | `jsonwebtoken` ^9 (HS256) |
+| Password hashing | `bcryptjs` ^3 |
+| API docs | `swagger-ui-express` ^5 |
+| Built-ins used | `node:crypto`, `node:test`, `node --env-file`, `node --watch` |
+| Process manager (production) | `pm2` (installed globally on the server, not a dependency) |
+| Seed tool | Python 3 + `pymongo` (already written; do not change) |
+
+- No other runtime dependencies. No dev dependencies.
+
+---
+
+## 3. Repository layout
 
 ```
-Province (1) ──< (1..N) District (1) ──< (0..N) Substation (1) ──< (0..N) Installation (1) ──< (0..N) Reading
-                            │
-                            └──< (0..N) User   (posting district)
+.
+├── docs/
+│   └── IMPLEMENTATION-GUIDE.md      this file
+├── seed/
+│   ├── seed_slsea.py                seed tool (DO NOT CHANGE)
+│   └── requirements.txt             pymongo>=4.6
+├── src/
+│   ├── server.js                    start-up sequence (§5.5), then listen
+│   ├── app.js                       Express app: pipeline order (§6.2), routers, 404/405, error handler
+│   ├── config.js                    reads and checks environment variables (§4)
+│   ├── models/                      one Mongoose model per collection (§5.1)
+│   │   ├── province.js  district.js  substation.js
+│   │   ├── installation.js  reading.js  user.js  counter.js
+│   ├── routes/                      wiring only: paths, methods, middleware chain
+│   │   ├── token.js  geography.js  installations.js  readings.js
+│   │   ├── region-readings.js  summaries.js  users.js  tooling.js
+│   ├── controllers/                 one file per routes file: request → lib/models → response
+│   ├── middleware/
+│   │   ├── origin.js  negotiation.js  authenticate.js  require-scope.js
+│   │   ├── json-body.js  method-not-allowed.js  not-found.js  error-handler.js
+│   ├── lib/
+│   │   ├── errors.js                ApiError class + error catalogue (§6.10)
+│   │   ├── geography.js             in-memory geography cache + area helpers (§7.6)
+│   │   ├── derived.js               latest readings, reporting status, energy today, summaries (§8)
+│   │   ├── http-cache.js            ETag, Last-Modified, conditional GET, If-Match (§6.7, §6.8)
+│   │   ├── pagination.js            offset/limit parsing, envelope, next/previous links (§6.4)
+│   │   ├── query.js                 query-parameter parsing rules (§6.5)
+│   │   ├── validation.js            body validators (§9)
+│   │   ├── representations.js       document → JSON shape (§6.3)
+│   │   ├── ids.js                   counters and id formats (§5.4)
+│   │   ├── time.js                  ISO parsing, Sri Lanka day (§6.6, §8)
+│   │   ├── tokens.js                JWT sign/verify (§7.3)
+│   │   └── secrets.js               device secrets, password hashing (§7.7, §7.8)
+│   └── openapi/
+│       └── document.js              OpenAPI 3.0.3 document as a JS object (§10)
+├── scripts/
+│   ├── create-test-accounts.js      (§11.1)
+│   └── simulate.js                  (§11.2, step D2)
+├── tests/                           node:test files (§12)
+├── ecosystem.config.cjs             pm2 config (step D1)
+├── .env.example
+├── .gitignore
+├── package.json
+└── README.md
 ```
 
-### 3.2 Database Collections (MongoDB)
+### 3.1 Where each endpoint lives
 
-- **Database:** MongoDB — local MongoDB 8 in development, **MongoDB Atlas** in production. Connection string in `MONGODB_URI`.
-- **Access:** Mongoose, **one model per entity** in `src/models/` (`Province`, `District`, `Substation`, `Installation`, `Reading`, `User`), mirroring the data model.
-- **Ids:** every document carries its own domain id (`province_id`, `installation_id`, …). MongoDB's `_id` is internal: never returned, never in a URI. Schemas use `versionKey: false`; responses are built from explicit field lists.
-- **Times:** stored as BSON dates; returned as ISO strings in UTC with `Z`.
-- **Indexes** are created by the app at start-up (Mongoose `syncIndexes`). Rules marked **(code)** are checked in code before writing.
+| Routes / controller file | Endpoints (§9) |
+|---|---|
+| `token.js` | EP1 |
+| `geography.js` | EP2, EP3, EP4 |
+| `summaries.js` | EP5 |
+| `installations.js` | EP6, EP7, EP8, EP12 |
+| `readings.js` | EP9, EP10, EP11 |
+| `region-readings.js` | EP17 |
+| `users.js` | EP13, EP14, EP15 |
+| `tooling.js` | §10 |
 
-#### provinces
-| Field | Type | Description |
+- Several routers may be mounted on the same prefix; each path is declared in exactly one file.
+
+### 3.2 `package.json` scripts
+
+| Script | Command |
+|---|---|
+| `start` | `node --env-file=.env src/server.js` |
+| `dev` | `node --env-file=.env --watch src/server.js` |
+| `test` | `node --env-file=.env --test "tests/*.test.js"` |
+| `test:smoke` | `node --env-file=.env --test tests/smoke.test.js` |
+| `accounts` | `node --env-file=.env scripts/create-test-accounts.js` |
+| `simulate` | `node --env-file=.env scripts/simulate.js` |
+
+### 3.3 `.gitignore`
+
+```
+node_modules/
+.env
+seed-output/
+__pycache__/
+*.log
+.DS_Store
+```
+
+---
+
+## 4. Environment variables
+
+| Name | Example (local) | Required | Used for |
+|---|---|---|---|
+| `PORT` | `3000` | yes | HTTP port |
+| `MONGODB_URI` | `mongodb+srv://USER:PASS@CLUSTER.mongodb.net/slsea` | yes | the seeded Atlas database (name taken from the URI) |
+| `PUBLIC_BASE_URL` | `http://localhost:3000/solar/v1.0` | yes | every absolute URL the API returns; no trailing slash |
+| `JWT_SECRET` | 64 random characters | yes, ≥ 32 chars | token signing |
+| `BOOTSTRAP_ADMIN_USERNAME` | `hq.admin` | no (default `hq.admin`) | §7.9 |
+| `BOOTSTRAP_ADMIN_PASSWORD` | — | yes when `users` is empty | §7.9 |
+| `ORIGIN_SECRET` | empty locally | no | §7.10; guard is off when empty |
+| `TEST_BASE_URL` | `http://localhost:3000/solar/v1.0` | tests/scripts (default `PUBLIC_BASE_URL`) | §11, §12 |
+| `TEST_ACCOUNT_PASSWORD` | — | tests/scripts | §11.1 |
+| `SIM_DEVICES_FILE` | `seed-output/device-credentials.json` | simulator | §11.2 |
+| `SIM_SKIP` | `INS-000002,INS-000065` | simulator (this default) | §11.2 |
+
+- `config.js` stops the process with a clear message if a required variable is missing or invalid.
+- `.env.example` lists every name above with placeholder values and no real secrets.
+
+---
+
+## 5. Database
+
+### 5.1 Collections and fields
+
+- Collection names are fixed (set `collection:` explicitly in each schema): `provinces`, `districts`, `substations`, `installations`, `readings`, `users`, `counters`.
+- Schemas: `versionKey: false`, no Mongoose `timestamps` option (times are set by code), `strict: true`.
+- Every query uses `.lean()` unless a document is being saved.
+- MongoDB's `_id` exists on every document but is **never** returned or used as an API id.
+
+**provinces** (seeded, read-only)
+
+| Field | Type | Notes |
 |---|---|---|
-| `province_id` | String | Unique, readable code (`western`) |
-| `name` | String | Display name |
-| `updated_at` | Date | Seed time |
-
-#### districts
-| Field | Type | Description |
-|---|---|---|
-| `district_id` | String | Unique, readable code (`nuwara-eliya`) |
-| `name` | String | Display name |
-| `province_id` | String | → provinces (indexed) |
-| `updated_at` | Date | Seed time |
-
-#### substations
-| Field | Type | Description |
-|---|---|---|
-| `substation_id` | String | Unique, readable code (`kotugoda`) |
-| `name` | String | Display name |
-| `district_id` | String | → districts (indexed) |
-| `updated_at` | Date | Seed time |
-
-#### installations
-| Field | Type | Description |
-|---|---|---|
-| `installation_id` | String (UUID) | Unique |
-| `meter_id` | String | **Unique index**; 3–32 characters of `A–Z 0–9 -` |
-| `capacity_kw` | Number | > 0 and ≤ 1000 |
-| `status` | String | `ACTIVE` or `DECOMMISSIONED` (indexed) |
-| `substation_id` | String | → substations (indexed) |
-| `device_secret_hash` | String \| null | SHA-256 hex of the device secret |
-| `device_secret_issued_at` | Date \| null | millisecond precision; becomes the device token's `ver` |
-| `created_at` | Date | |
-| `updated_at` | Date | Changes on every PUT |
-
-- Cannot be deleted while it has readings **(code)**.
-- Setting `status` to `DECOMMISSIONED` clears `device_secret_hash` and `device_secret_issued_at` **(code)**.
-
-#### readings
-| Field | Type | Description |
-|---|---|---|
-| `reading_id` | String (UUID) | Unique |
-| `installation_id` | String | → installations |
-| `recorded_at` | Date | When the device measured |
-| `received_at` | Date | When the API received it |
-| `power_kw` | Number | ≥ 0, 3 decimals |
-| `energy_kwh` | Number | ≥ 0, 3 decimals, lifetime counter |
-| `voltage` | Number | > 0, 1 decimal |
-
-- **Unique index** (`installation_id`, `recorded_at`): one reading per installation per time.
-- Index (`installation_id`, `received_at`).
-
-#### users
-| Field | Type | Description |
-|---|---|---|
-| `user_id` | String (UUID) | Unique |
+| `province_id` | Number (int) | 1–9 |
 | `name` | String | |
-| `username` | String | **Unique index**, lower case |
-| `password_hash` | String | bcryptjs |
-| `role` | String | `ANALYST`, `INSTALLATION_OFFICER`, `ADMIN` |
-| `jurisdiction_level` | String | `NATIONAL`, `PROVINCIAL`, `DISTRICT` |
-| `district_id` | String | → districts (posting) |
-| `password_changed_at` | Date | set at creation and on every password change; millisecond precision; becomes the user token's `ver` |
-| `created_at`, `updated_at` | Date | |
+| `updated_at` | Date | seed time |
 
-- `role = ADMIN` ⇒ `jurisdiction_level = NATIONAL` **(code)**.
-- References between collections are checked in code on every write (MongoDB has no foreign keys).
+**districts** (seeded, read-only)
 
-### 3.3 Seed Data
-
-**What the generator produces** (`scripts/generate-seed.js`, `npm run seed`)
-
-| File | Content | Commit? |
+| Field | Type | Notes |
 |---|---|---|
-| `data/seed/provinces.json` | 9 documents | yes |
-| `data/seed/districts.json` | 25 documents | yes |
-| `data/seed/substations.json` | 42 documents | yes |
-| `data/seed/installations.json` | 240 documents | yes |
-| `data/seed/readings.json` | ≈ 160,000 documents (≈ 40 MB) | **no** (git-ignored: large, and it changes with the generation time; `npm run seed` recreates it) |
-| `seed-output/device-credentials.json` | 236 plain device secrets `[{ "installation_id", "device_secret" }]` | **no** (git-ignored) |
-| `seed-output/test-device.json` | the test device (first normal Colombo installation by `meter_id`): `{ "installation_id", "device_secret" }` | **no** (git-ignored) |
+| `district_id` | Number (int) | 1–25 |
+| `name` | String | |
+| `province_id` | Number (int) | |
+| `updated_at` | Date | |
 
-- Each file is a JSON **array** of documents with exactly the fields in 3.2 (including `updated_at`, `created_at`, `received_at`). Dates are MongoDB Extended JSON: `{ "$date": "2026-10-04T08:15:00Z" }`.
-- **Every foreign key points at a document that exists. No orphans.** No users.
-- Every data value is plausible and repeatable: one seeded pseudo-random generator (no `faker`, no new dependency), so ids and values are the same on every run for the same end time. Only device secrets are truly random (`node:crypto`).
-- `npm run seed -- --end 2026-10-20T06:00:00Z` sets the end of the week explicitly; default = now, rounded down to 15 minutes.
-- Files are compact (no indentation) to keep them small.
+**substations** (seeded, read-only)
 
-**Loading (`scripts/load-seed.js`, `npm run seed:load`)**
-1. Reads the five files in `data/seed/` (Extended JSON, parsed with the BSON `EJSON` parser that ships with Mongoose — no new dependency).
-2. Connects to `MONGODB_URI`. If any of the five seed collections already has documents, it **stops** unless `--drop` is given; with `--drop` it empties those five collections first. It **never touches `users`**.
-3. Inserts in batches of 5,000, in FK order: provinces → districts → substations → installations → readings.
-4. Builds the indexes from the Mongoose models (`syncIndexes`) — a duplicate would fail here, not hide.
-5. Prints the count per collection. Then run `npm run db:check`.
-- Atlas: run it from your machine while your IP is allowed in Atlas Network Access (6.4 D1), then remove your IP.
-- MongoDB Compass is optional — useful to look at the data, not needed to load it.
-- **Re-seeding:** `npm run seed`, then `npm run seed:load -- --drop`. New device secrets are generated, so update the Postman environment (`device_secret`) and the simulator afterwards.
+| Field | Type | Notes |
+|---|---|---|
+| `substation_id` | Number (int) | 1–42 |
+| `name` | String | |
+| `district_id` | Number (int) | |
+| `updated_at` | Date | |
 
-**Provinces** (id: name)
-`western`: Western · `central`: Central · `southern`: Southern · `northern`: Northern · `eastern`: Eastern · `north-western`: North Western · `north-central`: North Central · `uva`: Uva · `sabaragamuwa`: Sabaragamuwa
+**installations**
 
-**Districts**
+| Field | Type | Notes |
+|---|---|---|
+| `installation_id` | String | `INS-` + 6 digits |
+| `meter_id` | String | unique |
+| `capacity_kw` | Number | > 0 |
+| `status` | String | `ACTIVE` \| `DECOMMISSIONED` |
+| `substation_id` | Number (int) | |
+| `device_secret_hash` | String \| null | SHA-256 hex of the device secret |
+| `device_secret_issued_at` | Date \| null | |
+| `created_at` | Date | |
+| `updated_at` | Date | |
 
-| Province | Districts (id · name) |
-|---|---|
-| western | `colombo` Colombo · `gampaha` Gampaha · `kalutara` Kalutara |
-| central | `kandy` Kandy · `matale` Matale · `nuwara-eliya` Nuwara Eliya |
-| southern | `galle` Galle · `matara` Matara · `hambantota` Hambantota |
-| northern | `jaffna` Jaffna · `kilinochchi` Kilinochchi · `mannar` Mannar · `vavuniya` Vavuniya · `mullaitivu` Mullaitivu |
-| eastern | `batticaloa` Batticaloa · `ampara` Ampara · `trincomalee` Trincomalee |
-| north-western | `kurunegala` Kurunegala · `puttalam` Puttalam |
-| north-central | `anuradhapura` Anuradhapura · `polonnaruwa` Polonnaruwa |
-| uva | `badulla` Badulla · `monaragala` Monaragala |
-| sabaragamuwa | `ratnapura` Ratnapura · `kegalle` Kegalle |
+**readings** (append-only)
 
-**Substations** (42; id = name in lower case with hyphens)
+| Field | Type | Notes |
+|---|---|---|
+| `reading_id` | Number (int) | |
+| `installation_id` | String | |
+| `recorded_at` | Date | measurement time (from the device) |
+| `received_at` | Date | arrival time (set by the server) |
+| `power_kw` | Number | |
+| `energy_kwh` | Number | lifetime counter |
+| `voltage` | Number | volts |
 
-| District | Substations |
-|---|---|
-| colombo | Kolonnawa, Pannipitiya, Dehiwala |
-| gampaha | Kotugoda, Biyagama |
-| kalutara | Panadura, Horana |
-| kandy | Kiribathkumbura, Peradeniya |
-| matale | Ukuwela, Dambulla |
-| nuwara-eliya | Nuwara Eliya, Hatton |
-| galle | Galle, Ambalangoda |
-| matara | Matara, Akuressa |
-| hambantota | Hambantota, Tissamaharama |
-| jaffna | Chunnakam |
-| kilinochchi | Kilinochchi |
-| mannar | Mannar |
-| vavuniya | Vavuniya |
-| mullaitivu | Mullaitivu |
-| batticaloa | Valaichchenai |
-| ampara | Ampara, Kalmunai |
-| trincomalee | Trincomalee |
-| kurunegala | Kurunegala, Kuliyapitiya |
-| puttalam | Puttalam, Chilaw |
-| anuradhapura | Anuradhapura, Habarana |
-| polonnaruwa | Polonnaruwa |
-| badulla | Badulla, Bandarawela |
-| monaragala | Monaragala |
-| ratnapura | Ratnapura, Balangoda, Embilipitiya |
-| kegalle | Kegalle |
+**users** (not seeded)
 
-**Installations** (240)
+| Field | Type | Notes |
+|---|---|---|
+| `user_id` | String | UUID from `crypto.randomUUID()` |
+| `name` | String | |
+| `username` | String | unique |
+| `password_hash` | String | bcrypt |
+| `password_changed_at` | Date | |
+| `role` | String | `ANALYST` \| `INSTALLATION_OFFICER` \| `ADMIN` |
+| `jurisdiction_level` | String | `NATIONAL` \| `PROVINCIAL` \| `DISTRICT` |
+| `district_id` | Number (int) | posting district |
+| `created_at` | Date | |
+| `updated_at` | Date | |
 
-| District | Count | District | Count | District | Count |
-|---|---|---|---|---|---|
-| colombo | 27 | hambantota | 8 | trincomalee | 6 |
-| gampaha | 24 | jaffna | 8 | kurunegala | 18 |
-| kalutara | 12 | kilinochchi | 4 | puttalam | 9 |
-| kandy | 16 | mannar | 4 | anuradhapura | 10 |
-| matale | 6 | vavuniya | 4 | polonnaruwa | 6 |
-| nuwara-eliya | 6 | mullaitivu | 4 | badulla | 8 |
-| galle | 12 | batticaloa | 7 | monaragala | 5 |
-| matara | 9 | ampara | 8 | ratnapura | 11 |
-| | | | | kegalle | 8 |
+**counters** (internal)
 
-- Within a district, installations go to its substations round-robin.
-- `installation_id`: UUID. `meter_id`: `SLM-` + 8 digits, sequential from `10000001`.
-- `capacity_kw`: one of 1.5, 3.0, 5.0, 10.0, 20.0 (mostly 3.0–10.0).
+| Field | Type | Notes |
+|---|---|---|
+| `_id` | String | `installation_id` or `reading_id` |
+| `seq` | Number | last number issued |
 
-**Readings**
-- Every 15 minutes for the **7 days** ending at the generation time (rounded down to 15 minutes) → 672 per installation.
-- `power_kw`: 0 from 18:15 to 06:00 Sri Lanka time (UTC+05:30); rises to a midday peak; never above `capacity_kw`; varies by day (weather) and a little by slot.
-- `energy_kwh`: starts at a random lifetime value (500–20,000) and increases by `power_kw × 0.25` each slot; never decreases.
-- `voltage`: 215–250, 1 decimal.
-- `received_at` = `recorded_at` + a few seconds (5–60).
-- `reading_id`: UUID.
+### 5.2 Indexes
 
-**Edge cases** — the first installations by `meter_id` in each district named:
+Declare exactly these in the schemas (they already exist from the seed for the first five collections).
 
-| District | Kind | Status | Readings | Credential |
-|---|---|---|---|---|
-| colombo, kandy | never reported | ACTIVE | none | none |
-| colombo, kandy | silent | ACTIVE | stop 6 hours before the end | yes |
-| colombo, kandy | decommissioned | DECOMMISSIONED | stop 3 days before the end | none (decommissioning removes it) |
-| all others | normal | ACTIVE | every slot | yes |
+| Collection | Keys | Unique |
+|---|---|---|
+| provinces | `{ province_id: 1 }` | yes |
+| districts | `{ district_id: 1 }` | yes |
+| districts | `{ province_id: 1 }` | no |
+| substations | `{ substation_id: 1 }` | yes |
+| substations | `{ district_id: 1 }` | no |
+| installations | `{ installation_id: 1 }` | yes |
+| installations | `{ meter_id: 1 }` | yes |
+| installations | `{ status: 1 }` | no |
+| installations | `{ substation_id: 1 }` | no |
+| readings | `{ reading_id: 1 }` | yes |
+| readings | `{ installation_id: 1, recorded_at: 1 }` | yes |
+| readings | `{ installation_id: 1, received_at: 1 }` | no |
+| users | `{ user_id: 1 }` | yes |
+| users | `{ username: 1 }` | yes |
 
-**Device credentials**
-- Every **normal** and **silent** installation gets a secret (32 random bytes, base64url) — 236 in total. Never-reported and decommissioned installations get none (`device_secret_hash` and `device_secret_issued_at` are `null`).
-- `installations.json` stores only `device_secret_hash` (SHA-256 hex).
-- Plain secrets go to `seed-output/device-credentials.json` (git-ignored): `[{ "installation_id", "device_secret" }]`.
+- Set `autoIndex: false` on the connection.
+- At start-up call `Model.createIndexes()` for every model. **Never** call `syncIndexes()`.
 
-**The generator checks its files and prints a summary; `npm run db:check` runs the same checks against the database after loading**
+### 5.3 Seed facts (for tests and README)
 
-| Check | Expected |
-|---|---|
-| provinces / districts / substations / installations | 9 / 25 / 42 / 240 |
-| every foreign key valid | yes |
-| every district has a substation and an installation | yes |
-| `meter_id` unique | yes |
-| `power_kw` > `capacity_kw` | 0 |
-| `power_kw` > 0 at night | 0 |
-| energy decreasing within an installation | 0 |
-| status counts | ACTIVE 238, DECOMMISSIONED 2 |
-| installations without readings | 2 |
-| installations with a credential | 236 (none on never-reported or decommissioned) |
-| readings per installation | 672 (silent 648, decommissioned 384) |
+- Counts: 9 provinces, 25 districts, 42 substations, 240 installations, 159,312 readings.
+- Ids: installations `INS-000001`–`INS-000240`; readings 1–159312; meters `SLM-10000001`–`SLM-10000240`.
+- Readings cover 7 days at 15-minute steps, ending at the time the seed tool was run.
+- Substations: Colombo (district 1) = 1 Kolonnawa, 2 Pannipitiya, 3 Dehiwala. Kandy (district 4) = 8 Kiribathkumbura, 9 Peradeniya.
+- Edge-case installations:
 
-**Before submission:** run `npm run seed`, then `MONGODB_URI=<atlas> npm run seed:load -- --drop`, so the readings end close to marking time. Commit the (small) changed seed files; update the Postman production environment with the new test-device secret.
+| Installation | District | Substation | Kind | Status | Credential | Readings |
+|---|---|---|---|---|---|---|
+| `INS-000001` | 1 Colombo | 1 | never reported | ACTIVE | none | 0 |
+| `INS-000002` | 1 Colombo | 2 | silent | ACTIVE | yes | 648 (stop 6 h before seed end) |
+| `INS-000003` | 1 Colombo | 3 | decommissioned | DECOMMISSIONED | none | 384 (stop 3 days before seed end) |
+| `INS-000064` | 4 Kandy | 8 | never reported | ACTIVE | none | 0 |
+| `INS-000065` | 4 Kandy | 9 | silent | ACTIVE | yes | 648 |
+| `INS-000066` | 4 Kandy | 8 | decommissioned | DECOMMISSIONED | none | 384 |
 
-### 3.4 Accounts (not seed data)
+- `INS-000004` (Colombo, substation 1) is a normal site; its secret is in `seed-output/test-device.json` on the machine that ran the seed.
+- The Atlas database is already seeded. Re-seeding is done by the user only (before submission), never by the agent or the app:
+  `python3 seed/seed_slsea.py --uri "<MONGODB_URI>" --drop`
+  It writes device secrets to `seed-output/` (git-ignored).
 
-- **Bootstrap:** at start-up, if the `users` collection is empty, the app creates **`hq.admin`** (ADMIN, NATIONAL, posting `colombo`) from `BOOTSTRAP_ADMIN_USERNAME` (default `hq.admin`), `BOOTSTRAP_ADMIN_PASSWORD`, `BOOTSTRAP_ADMIN_NAME`. Otherwise it does nothing.
-- **Test accounts:** created **once per database through the API** (`POST /users` as `hq.admin`) by the Postman folder **"L5 Setup — test accounts"**, after phase L5. They persist in the database. Password = the Postman environment's `test_password`.
+### 5.4 Ids for new records
 
-| Username | Role | Level | Posting |
-|---|---|---|---|
-| `nat.analyst` | ANALYST | NATIONAL | colombo |
-| `west.analyst` | ANALYST | PROVINCIAL | colombo |
-| `colombo.analyst` | ANALYST | DISTRICT | colombo |
-| `kandy.analyst` | ANALYST | DISTRICT | kandy |
-| `colombo.officer` | INSTALLATION_OFFICER | DISTRICT | colombo |
+- `installation_id`: `INS-` + next `installation_id` counter value, zero-padded to 6 digits.
+- `reading_id`: next `reading_id` counter value.
+- `user_id`: `crypto.randomUUID()`.
+- Next value: `Counter.findOneAndUpdate({ _id }, { $inc: { seq: 1 } }, { upsert: true, returnDocument: 'after' })`.
+- At start-up, raise each counter to at least the highest stored id: `updateOne({ _id }, { $max: { seq: highest } }, { upsert: true })`.
+  - highest installation number = numeric part of the largest `installation_id` (sort descending, take 1), or 0.
+  - highest reading id = largest `reading_id`, or 0.
+- Gaps are allowed. Numbers are never reused.
 
-- The README lists `hq.admin`, these accounts and the test device (a normal Colombo installation id + its secret, from `seed-output/`). Repository private.
+### 5.5 Start-up sequence (`server.js`)
 
-### 3.5 Device Simulator (recommended, phase D5)
-
-- `npm run simulate`: for each normal installation, gets a token (`POST /token`, client credentials) and posts the next reading through the public API.
-- To continue the energy counter it first reads the installation's last-known reading with an analyst token.
-- Runs every 15 minutes from a GitHub Actions schedule while the work is being marked, so "now" views stay current. Inputs (`API_BASE_URL`, test-account password, device credentials) are repository secrets.
+1. Load and check config (§4).
+2. Connect to MongoDB (`autoIndex: false`).
+3. `createIndexes()` for every model.
+4. Raise counters (§5.4).
+5. Load the geography cache (§7.6).
+6. Bootstrap the first admin (§7.9).
+7. Start listening on `PORT`. Log one line with the port and `PUBLIC_BASE_URL`.
+- Any failure in 1–6 → log the error and exit with code 1.
 
 ---
 
-## 4. API Routes
+## 6. HTTP conventions
 
-### 4.1 Route Map
+### 6.1 Paths and routing
 
-```
-# ── Authentication ─────────────────────────────────────
-POST   /solar/v1.0/token                                             # Token for a user or a device
+- All API routes live under `/solar/v1.0`.
+- Routing is **strict** and **case-sensitive**: `app.set('strict routing', true)`, `app.set('case sensitive routing', true)`, and every `express.Router({ strict: true, caseSensitive: true, mergeParams: true })`.
+  - `/installations/` and `/Installations` → 404.
+- Each path is declared once with `router.route(path)`, its methods chained, and `.all(methodNotAllowed([...]))` last.
+- `app.set('etag', false)` and `app.set('x-powered-by', false)`.
+- Unknown path (including other versions such as `/solar/v2.0/...`) → 404 `40403`.
+- Known path, method not listed → 405 `40501` with `Allow: <methods>` (e.g. `Allow: GET, POST`).
 
-# ── Geography (read-only) ──────────────────────────────
-GET    /solar/v1.0/provinces                                         # List provinces
-GET    /solar/v1.0/provinces/:provinceId                             # One province
-GET    /solar/v1.0/provinces/:provinceId/generation-summary          # Province summary
-GET    /solar/v1.0/districts                                         # List districts
-GET    /solar/v1.0/districts/:districtId                             # One district
-GET    /solar/v1.0/districts/:districtId/generation-summary          # District summary
-GET    /solar/v1.0/generation-summary                                # National summary
-GET    /solar/v1.0/substations                                       # List substations
-GET    /solar/v1.0/substations/:substationId                         # One substation
+**Path id formats** (a value that does not match → 404 `40401`):
 
-# ── Installations ──────────────────────────────────────
-GET    /solar/v1.0/installations                                     # List installations
-POST   /solar/v1.0/installations                                     # Register an installation
-GET    /solar/v1.0/installations/:installationId                     # One installation
-PUT    /solar/v1.0/installations/:installationId                     # Replace (incl. status)
-DELETE /solar/v1.0/installations/:installationId                     # Remove (no readings only)
-GET    /solar/v1.0/installations/:installationId/overview            # Installation + context + latest reading
-GET    /solar/v1.0/installations/:installationId/last-known-reading  # Latest reading
-POST   /solar/v1.0/installations/:installationId/device-credential   # Issue a new device secret
+| Parameter | Pattern |
+|---|---|
+| `{province-id}`, `{district-id}`, `{substation-id}`, `{reading-id}` | `^[1-9][0-9]*$` |
+| `{installation-id}` | `^INS-[0-9]{6}$` |
+| `{user-id}` | UUID (`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`) |
 
-# ── Readings (scoped to an installation) ───────────────
-GET    /solar/v1.0/installations/:installationId/readings            # History
-POST   /solar/v1.0/installations/:installationId/readings            # Device pushes a reading
-GET    /solar/v1.0/installations/:installationId/readings/:readingId # One reading
+### 6.2 Request pipeline (fixed order)
 
-# ── Readings by region (read-only) ─────────────────────
-GET    /solar/v1.0/districts/:districtId/readings                    # All readings of a district's installations
-GET    /solar/v1.0/provinces/:provinceId/readings                    # All readings of a province's installations
-
-# ── Users (ADMIN) ──────────────────────────────────────
-GET    /solar/v1.0/users                                             # List users
-POST   /solar/v1.0/users                                             # Create a user
-GET    /solar/v1.0/users/:userId                                     # One user
-PUT    /solar/v1.0/users/:userId                                     # Replace a user
-DELETE /solar/v1.0/users/:userId                                     # Remove a user
-POST   /solar/v1.0/users/:userId/password                            # Change own / reset another's password
-
-# ── Documentation and health (public) ──────────────────
-GET    /                                                             # Health: { "status": "ok", "service": "slsea-solar-api" }
-GET    /solar/v1.0/docs                                              # Swagger UI
-GET    /solar/v1.0/openapi                                           # OpenAPI document (JSON)
-```
-
-- No other routes. No global `/readings`. No trailing slashes (→ 404). Other methods on these paths → 405.
-
-### 4.2 Endpoint Status
-
-Status: ❌ not started · 🔨 in progress · ✅ done and checked.
-
-| Endpoint | Scope | Success | Errors | Status |
-|---|---|---|---|---|
-| `POST /token` | none | 200 | 400 · 401 · 415 | ❌ |
-| `GET /provinces`, `/districts` | `geography:read` | 200 / 304 | 400 · 401 · 403 | ❌ |
-| `GET /provinces/:id`, `/districts/:id` | `geography:read` | 200 / 304 | 401 · 403 · 404 | ❌ |
-| `GET /…/generation-summary` (3 routes) | `generation:read` | 200 / 304 | 401 · 403 · 404 | ❌ |
-| `GET /substations` | `geography:read` | 200 / 304 | 400 · 401 · 403 | ❌ |
-| `GET /substations/:id` | `geography:read` | 200 / 304 | 401 · 403 · 404 | ❌ |
-| `GET /installations` | `generation:read` | 200 / 304 | 400 · 401 · 403 | ❌ |
-| `POST /installations` | `installations:write` | 201 | 400 · 401 · 403 · 409 · 415 | ❌ |
-| `GET /installations/:id` | `generation:read` | 200 / 304 | 401 · 403 · 404 | ❌ |
-| `PUT /installations/:id` | `installations:write` | 200 | 400 · 401 · 403 · 404 · 409 · 412 · 415 | ❌ |
-| `DELETE /installations/:id` | `installations:write` | 200 | 401 · 403 · 404 · 409 · 412 | ❌ |
-| `GET /installations/:id/overview` | `generation:read` | 200 / 304 | 401 · 403 · 404 | ❌ |
-| `GET /installations/:id/last-known-reading` | `generation:read` | 200 / 304 | 401 · 403 · 404 | ❌ |
-| `POST /installations/:id/device-credential` | `credentials:issue` | 200 | 401 · 403 · 404 | ❌ |
-| `GET /installations/:id/readings` | `generation:read` | 200 / 304 | 400 · 401 · 403 · 404 | ❌ |
-| `POST /installations/:id/readings` | `readings:write` | 201 (200 identical retry) | 400 · 401 · 403 · 409 · 415 | ❌ |
-| `GET /installations/:id/readings/:readingId` | `generation:read` | 200 / 304 | 401 · 403 · 404 | ❌ |
-| `GET /districts/:id/readings`, `/provinces/:id/readings` | `generation:read` | 200 / 304 | 400 · 401 · 403 · 404 | ❌ |
-| `GET /users` | `users:manage` | 200 / 304 | 400 · 401 · 403 | ❌ |
-| `POST /users` | `users:manage` | 201 | 400 · 401 · 403 · 409 · 415 | ❌ |
-| `GET /users/:id` | `users:manage` | 200 / 304 | 401 · 403 · 404 | ❌ |
-| `PUT /users/:id` | `users:manage` | 200 | 400 · 401 · 403 · 404 · 409 · 412 · 415 | ❌ |
-| `DELETE /users/:id` | `users:manage` | 200 | 401 · 403 · 404 · 412 | ❌ |
-| `POST /users/:id/password` | `account:write` (own) or `users:manage` | 200 | 400 · 401 · 403 · 404 · 415 | ❌ |
-| `GET /` (health), `/docs`, `/openapi` | none | 200 | — | ❌ |
-
-- Every route can also return 405, 406 and 500.
-
-### 4.3 Query Parameters
-
-| Parameter | Type | Applies to | Example |
+| Step | Where | Check | Failure |
 |---|---|---|---|
-| `offset` | int ≥ 0 (default 0) | every collection | `?offset=40` |
-| `limit` | int 1–100 (default 20) | every collection | `?limit=50` |
-| `province-id` | text | districts, substations, installations | `/installations?province-id=western` |
-| `district-id` | text | substations, installations, users, province readings | `/installations?district-id=colombo` |
-| `substation-id` | text | installations, district and province readings | `/installations?substation-id=kotugoda` |
-| `status` | `ACTIVE` / `DECOMMISSIONED` | installations | `/installations?status=ACTIVE` |
-| `reporting-status` | `REPORTING` / `SILENT` / `NEVER_REPORTED` | installations (ACTIVE only) | `/installations?reporting-status=SILENT` |
-| `role` | role | users | `/users?role=ANALYST` |
-| `jurisdiction-level` | level | users | `/users?jurisdiction-level=DISTRICT` |
-| `from` | timestamp with offset (inclusive) | readings (installation and region) | `?from=2026-10-01T00:00:00%2B05:30` |
-| `to` | timestamp with offset (exclusive) | readings (installation and region) | `?to=2026-10-02T00:00:00Z` |
-| `sort` | `recorded-at:desc` (default) / `recorded-at:asc` | readings (installation and region) | `?sort=recorded-at:asc` |
+| 0 | `origin.js` (all requests) | `X-Origin-Secret` equals `ORIGIN_SECRET` (only when set) | 403 `40309` |
+| 1 | `tooling.js` | tooling routes (§10) answered here; they skip steps 2–7 | — |
+| 2 | `negotiation.js` | if `Accept` is present, `req.accepts('application/json')` must be truthy | 406 `40601` |
+| 3 | router | path exists; method allowed | 404 `40403` · 405 `40501` |
+| 4 | `authenticate.js` | bearer token valid and current (§7.4) | 401 `40101` · `40102` |
+| 5 | `require-scope.js` | effective scopes contain the route's scope (§7.5) | 403 `40301` |
+| 6 | `json-body.js` (routes with a JSON body) | `Content-Type` is `application/json` (charset allowed), then JSON parses | 415 `41501` · 400 `40001` |
+| 7 | controller | in this order: query/body validation (400) → target exists and is in the area (404 / 403) → `If-Match` (403 `40303` / 412) → business rules (409 / 403) → respond |
 
-- Rule: a parameter name is the attribute name written with URI rules (lower case, hyphens). No URI contains an underscore.
+- `/token` uses its own body handling (§7.2) and no step 4–5.
+- `json-body.js` = content-type check, then `express.json({ limit: '100kb' })`. Parse errors → 400 `40001` "Malformed JSON body".
+- A JSON body must be a JSON object; anything else → 400 `40001`.
+- `error-handler.js` turns `ApiError` into the error body (§6.10). Any other error → log it, 500 `50001`, no stack trace.
 
-- Default order: geography by id, installations by `meter_id`, users by `username`.
-- Unknown parameter or invalid value → 400 `40002`. `from` ≥ `to` or a timestamp without offset → 400 `40003`.
+### 6.3 Representations
 
-### 4.4 Authentication and Access
+- `Content-Type: application/json; charset=utf-8` on every body (`res.json`).
+- snake_case field names everywhere.
+- Never returned: `_id`, `device_secret_hash`, `password_hash`, `received_at`, `created_at`, `updated_at`, `password_changed_at`, `device_secret_issued_at`.
+- Built explicitly in `lib/representations.js` (pick fields; never spread a document).
 
-**Token endpoint (OAuth 2.0, RFC 6749)** — `POST /solar/v1.0/token`, body `application/x-www-form-urlencoded`:
-- Users: `grant_type=password&username=…&password=…`
-- Devices: `grant_type=client_credentials` with `Authorization: Basic base64(installation_id:device_secret)` (also accepted: `client_id` and `client_secret` form fields).
-- Use `express.urlencoded()` on this route only; everywhere else `express.json()`.
+| Resource | Shape |
+|---|---|
+| Province | `{ "province_id": 1, "name": "Western" }` |
+| District | `{ "district_id": 1, "name": "Colombo", "province_id": 1 }` |
+| Substation | `{ "substation_id": 1, "name": "Kolonnawa", "district_id": 1 }` |
+| Installation | `{ "installation_id": "INS-000241", "meter_id": "SLM-10000241", "capacity_kw": 5, "status": "ACTIVE", "substation_id": 1 }` |
+| Reading | `{ "reading_id": 159313, "installation_id": "INS-000241", "recorded_at": "2026-10-04T08:15:00.000Z", "power_kw": 3.412, "energy_kwh": 10234.551, "voltage": 236.4 }` |
+| User | `{ "user_id": "7c2d…", "name": "Nimali Perera", "username": "nimali.p", "role": "ANALYST", "jurisdiction_level": "DISTRICT", "district_id": 4 }` |
 
-**Access tokens** — JWT (HS256), `Authorization: Bearer <token>`, lifetime `JWT_TTL_MINUTES` (default 60).
+Overview and summary shapes: §9 EP8, EP5.
 
-| Claim | User token | Device token |
-|---|---|---|
-| `iss` | `{PUBLIC_BASE_URL}/solar/v1.0` | same |
-| `aud` | `slsea-solar-api` | same |
-| `sub` | user id | installation id |
-| `typ` | `user` | `device` |
-| `ver` | `password_changed_at` (ms since epoch) | `device_secret_issued_at` (ms since epoch) |
-| `scope` | by role (below) | `readings:write` |
-| `iat`, `exp`, `jti` | yes | yes |
+### 6.4 Collections and pagination
 
-- Verify signature, `iss`, `aud`, `exp` on every request.
+- Every collection response:
+  ```json
+  { "count": 672, "next": "<absolute url or null>", "previous": "<absolute url or null>", "items": [ ... ] }
+  ```
+- `count` = total items matching the query (all pages).
+- `offset`: integer ≥ 0, default 0. `limit`: integer 1–100, default 20.
+- `next` = same URL with `offset = offset + limit`, only if `offset + limit < count`, else `null`.
+- `previous` = same URL with `offset = max(0, offset − limit)`, only if `offset > 0`, else `null`.
+- Links = `PUBLIC_BASE_URL` + path after the base + every query parameter of the request, with `offset` and `limit` set explicitly.
+- Offset beyond `count` → 200 with empty `items`.
+- An empty result is 200 with `count: 0` and `items: []`, never 404.
 
-**Scopes**
+### 6.5 Query parameters
 
-| Client | Scopes |
+- Each route lists its allowed parameters (§9). Any other parameter → 400 `40002`.
+- A parameter given more than once → 400 `40002`.
+- `offset`, `limit` invalid → 400 `40002`.
+- `province-id`, `district-id`, `substation-id`: integer pattern and must exist in the geography cache → else 400 `40002`.
+- `status`: `ACTIVE` | `DECOMMISSIONED`. `reporting-status`: `REPORTING` | `SILENT` | `NEVER_REPORTED`. `role`: the three roles. `jurisdiction-level`: the three levels. Exact upper case → else 400 `40002`.
+- `sort`: `recorded-at:desc` (default) | `recorded-at:asc` → else 400 `40002`.
+- `from` (inclusive), `to` (exclusive): timestamps per §6.6 → else 400 `40003`. Both given and `from >= to` → 400 `40003`.
+- Several filters combine with AND.
+
+### 6.6 Timestamps
+
+- Input pattern: `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$`, and `Date.parse` must succeed. No offset → rejected.
+- Stored as `Date`. Output always `date.toISOString()` (UTC, milliseconds included).
+- HTTP date headers (`Last-Modified`, `If-Modified-Since`): `toUTCString()`, compared at whole seconds.
+
+### 6.7 Conditional GET
+
+Every successful GET (200) sends `ETag` and `Last-Modified`.
+
+- **ETag:** strong, `"` + base64url(SHA-256(`JSON.stringify(source)`)) + `"`.
+  - `source` = the response body. For summaries (EP5) the body **without** `computed_at`.
+- **Last-Modified** (sent floored to the second):
+
+| Resource | Value |
+|---|---|
+| Province, district, substation (member) | its `updated_at` |
+| Province, district, substation lists | latest `updated_at` in that collection |
+| Installation (member) | `updated_at` |
+| User (member) | `updated_at` |
+| Reading (member), last-known reading | the reading's `received_at` |
+| `/installations/{id}/readings` | latest `received_at` of that installation; installation `created_at` if it has none |
+| Everything else (installation list, user list, overview, summaries, region readings) | time the response is built |
+
+- **Request handling:**
+  1. If `If-None-Match` is present: split on commas, trim, drop a leading `W/`. If any value equals the current ETag, or the header is `*` → 304.
+  2. Else if `If-Modified-Since` is a valid HTTP date and floor-to-second(Last-Modified) ≤ that date → 304.
+  3. Else → 200 with body.
+- **304:** status 304, headers `ETag` and `Last-Modified`, no body, no `Content-Type`.
+- One helper (`sendWithCaching(req, res, body, lastModified, etagSource?)`) does all of this.
+
+### 6.8 Conditional updates (`If-Match`)
+
+- Required on `PUT` and `DELETE` of installations and users.
+- Header missing → 403 `40303`.
+- Header is `*`, or any comma-separated value equals the ETag of the **current** representation (same function as GET) → continue.
+- Otherwise → 412 `41201`.
+- Checked after the target is found (a repeated DELETE gives 404, not 412).
+- Successful PUT → 200, body = new representation, new `ETag` and `Last-Modified`.
+
+### 6.9 Create responses
+
+Every POST that creates a record:
+- 201, body = the new representation.
+- `Location` and `Content-Location` = absolute URL of the new resource.
+- `ETag` and `Last-Modified` as for a GET of that resource.
+
+### 6.10 Error body and catalogue
+
+Every 4xx and 5xx body:
+
+```json
+{
+  "code": 40001,
+  "message": "capacity_kw must be greater than 0 and at most 1000.",
+  "description": "Invalid request body",
+  "more_info": "<PUBLIC_BASE_URL>/docs",
+  "error": [ { "code": 40001, "message": "capacity_kw must be greater than 0 and at most 1000." } ]
+}
+```
+
+- `code`: from the table below. `description`: the fixed short title from the table. `message`: detailed text for this case. `more_info`: always `PUBLIC_BASE_URL + "/docs"`. `error`: one entry per field problem; `[]` when there is none.
+- All five fields are always present.
+
+| HTTP | Code | Description (fixed) | Used when |
+|---|---|---|---|
+| 400 | 40001 | Invalid request body | missing/unknown/invalid field; malformed JSON; bad form at `/token` |
+| 400 | 40002 | Invalid query parameter | unknown/repeated parameter; bad value; filter not inside the path region |
+| 400 | 40003 | Invalid time | bad timestamp; no offset; future/too old reading; `from >= to` |
+| 400 | 40004 | Reading value out of range | power, voltage or energy outside limits |
+| 400 | 40005 | Energy counter inconsistent | counter below the previous or above the next reading in time |
+| 401 | 40101 | Authentication required | no bearer token |
+| 401 | 40102 | Invalid token | bad signature, expired, wrong issuer/audience, subject gone or revoked |
+| 401 | 40103 | Invalid credentials | wrong username/password or device credentials at `/token` |
+| 403 | 40301 | Insufficient scope | effective scopes lack the route's scope |
+| 403 | 40302 | Outside jurisdiction | region (path or filter) or substation outside the caller's area |
+| 403 | 40303 | Precondition required | `If-Match` missing |
+| 403 | 40304 | Installation decommissioned | credential issue or reading for a decommissioned site |
+| 403 | 40305 | Own account | ADMIN changing or deleting their own account |
+| 403 | 40306 | Wrong installation | device token used for another installation |
+| 403 | 40307 | Wrong current password | own password change with a wrong current password |
+| 403 | 40308 | Not allowed for this account | password of another user, caller not ADMIN |
+| 403 | 40309 | Forbidden origin | origin secret missing or wrong |
+| 404 | 40401 | Resource not found | unknown id, hidden asset outside the area, invalid path id |
+| 404 | 40402 | No readings yet | last-known reading of an installation without readings |
+| 404 | 40403 | Path not found | no route matches |
+| 405 | 40501 | Method not allowed | method not listed for the path (always with `Allow`) |
+| 406 | 40601 | Not acceptable | `Accept` does not allow `application/json` |
+| 409 | 40901 | Conflicting reading | another reading with the same `recorded_at` and different values |
+| 409 | 40902 | Meter already registered | `meter_id` used by another installation |
+| 409 | 40903 | Installation has readings | DELETE of an installation with readings |
+| 409 | 40904 | Username taken | `username` used by another user |
+| 412 | 41201 | Precondition failed | stale `If-Match` |
+| 415 | 41501 | Unsupported media type | wrong request `Content-Type` |
+| 500 | 50001 | Internal error | anything unexpected |
+
+### 6.11 Response headers summary
+
+| Header | When |
+|---|---|
+| `Content-Type: application/json; charset=utf-8` | every response with a body |
+| `ETag`, `Last-Modified` | every 200 GET, 304, 201, 200 PUT |
+| `Location`, `Content-Location` | every 201 |
+| `Content-Location` | last-known reading (EP9); identical reading resend (EP10) |
+| `Allow` | every 405 |
+| `WWW-Authenticate` | every 401 (values in §7.2, §7.4) |
+| `Cache-Control: no-store` + `Pragma: no-cache` | `/token`, device credential, password responses |
+
+---
+
+## 7. Security
+
+### 7.1 Scopes
+
+| Principal | Scopes |
 |---|---|
 | Device | `readings:write` |
 | ANALYST | `geography:read generation:read account:write` |
 | INSTALLATION_OFFICER | `geography:read generation:read installations:write credentials:issue account:write` |
 | ADMIN | `geography:read users:manage account:write` |
 
-**Every request re-checks the database (immediate revocation)**
-- User token: the user must still exist and the token's `ver` must equal the user's current `password_changed_at` (ms). Role, level and posting are read **from the database** (one indexed lookup), not from the token.
-- Device token, in this order: installation missing → 401 `40102`; `DECOMMISSIONED` → 403 `40304`; no credential, or `ver` ≠ `device_secret_issued_at` (ms) → 401 `40102`.
-- Every 401 here carries `WWW-Authenticate: Bearer realm="solar", error="invalid_token"`.
-- Why `ver` and not `iat`: `iat` is in whole seconds, so a token fetched in the same second as a password change or re-issue would be judged wrongly (03 A7).
+### 7.2 `POST /solar/v1.0/token`
 
-**Check order (every request):**
-0. origin: when `ORIGIN_SECRET` is set, the `X-Origin-Secret` header must match (else 403 `40309`) — blocks direct requests to the EC2 instance
-1. `Accept` (else 406)
-2. valid token (else 401 + `WWW-Authenticate: Bearer realm="solar"`)
-3. scope (else 403 `40301`)
-4. body `Content-Type` (else 415), then syntax and fields (else 400)
-5. target exists and is inside the area (else 404); an **area** outside the caller's area (403 `40302`); a device writing another installation (403 `40306`)
-6. preconditions: `If-Match` missing (403 `40303`), stale (412)
-7. business rules (409; 403 `40304`, `40305`, `40307`, `40308`)
+- No bearer token. `Allow: POST`.
+- Request `Content-Type` must be `application/x-www-form-urlencoded` → else 415 `41501`. Parse with `express.urlencoded({ extended: false })`.
+- Unknown form fields are **ignored**.
+- `grant_type` missing or not `password` / `client_credentials` → 400 `40001`.
 
-- "Exists" (5) is checked before `If-Match` (6), so a repeated DELETE gives 404, not 412.
+**`grant_type=password` (users)**
+- Fields `username`, `password` required → else 400 `40001`.
+- Any `Authorization` header is ignored.
+- User not found or `bcrypt.compare` fails → 401 `40103`, `WWW-Authenticate: Basic realm="solar"`.
+- Token: `typ: "user"`, `sub: user_id`, `scope` = role scopes (§7.1), `ver = password_changed_at.getTime()`.
 
-**Area** = set of district ids:
-- `DISTRICT` → the posting district
-- `PROVINCIAL` → every district in the posting district's province
-- `NATIONAL` → all districts
+**`grant_type=client_credentials` (devices)**
+- `Authorization: Basic base64(installation_id:device_secret)` required. Missing or malformed → 401 `40103`.
+- Fail with 401 `40103` (same message) when: installation not found, `status` ≠ `ACTIVE`, no `device_secret_hash`, or SHA-256 of the secret does not match (compare with `crypto.timingSafeEqual`).
+- Token: `typ: "device"`, `sub: installation_id`, `scope: "readings:write"`, `ver = device_secret_issued_at.getTime()`.
 
-**Outside the area**
+**Response 200** (headers `Cache-Control: no-store`, `Pragma: no-cache`):
+```json
+{ "access_token": "eyJ…", "token_type": "Bearer", "expires_in": 3600, "scope": "geography:read generation:read account:write" }
+```
+- All `/token` errors use the normal error body (§6.10).
 
-| Request | Response |
-|---|---|
-| A single asset (installation, overview, last-known reading, readings, device credential) | 404 `40401` |
-| An area: `province-id` / `district-id` / `substation-id` filter, a summary or region-readings path, `substation_id` in a body | 403 `40302` |
-| A collection without an area filter | narrowed to the area (200) |
+### 7.3 JWT
 
-- Provinces, districts and **substations**: public reference data, readable by every user token (scope `geography:read`).
-- `/users`: ADMIN only, not narrowed.
+- HS256 with `JWT_SECRET`. Lifetime 3600 s.
+- Claims: `iss: "slsea-solar-api"`, `aud: "slsea-solar-api"`, `sub`, `typ`, `scope` (space-separated), `ver` (number), `iat`, `exp`.
+- Verify with `algorithms: ['HS256']`, issuer and audience checked.
 
-**Secrets** — passwords: bcryptjs, min length 10, never returned. Device secrets: 32 random bytes base64url, stored as SHA-256, shown once.
+### 7.4 `authenticate.js`
 
-**Accounts** — `hq.admin` at start-up; test accounts through the API (3.4).
+- No `Authorization: Bearer <token>` → 401 `40101`, `WWW-Authenticate: Bearer realm="solar"`.
+- Verify fails (signature, expiry, iss, aud, missing claims) → 401 `40102`, `WWW-Authenticate: Bearer realm="solar", error="invalid_token"`.
+- `typ: "user"`: load the user by `user_id = sub`. Missing, or `ver` ≠ `password_changed_at.getTime()` → 401 `40102`.
+- `typ: "device"`: load the installation by `installation_id = sub`. Missing, `status` ≠ `ACTIVE`, `device_secret_issued_at` null, or `ver` ≠ `device_secret_issued_at.getTime()` → 401 `40102`.
+- Sets `req.principal`:
+  - user: `{ type: 'user', user, scopes: tokenScopes ∩ roleScopes(user.role), area: areaOf(user) }`
+  - device: `{ type: 'device', installation, scopes: tokenScopes ∩ ['readings:write'] }`
 
-**Environment variables:** `PORT`, `MONGODB_URI`, `PUBLIC_BASE_URL`, `JWT_SECRET`, `JWT_TTL_MINUTES`, `BOOTSTRAP_ADMIN_USERNAME` (default `hq.admin`), `BOOTSTRAP_ADMIN_PASSWORD`, `BOOTSTRAP_ADMIN_NAME`, `ORIGIN_SECRET` (production only; the same value is added as a header by API Gateway). Only `.env.example` is committed.
+### 7.5 `require-scope.js`
 
-**OpenAPI security** — one `oauth2` scheme with two flows, both with `tokenUrl: /solar/v1.0/token`: `password` and `clientCredentials`, listing every scope. Each operation lists the scope it needs. This makes Swagger's **Authorize** button fetch tokens itself.
+- `requireScope(...anyOf)`: passes if `req.principal.scopes` contains at least one listed scope; else 403 `40301`.
+
+### 7.6 Geography cache and areas (`lib/geography.js`)
+
+- At start-up load all provinces, districts, substations into maps: by id, districts by province, substations by district, district of each substation, province of each district.
+- Never changes at runtime.
+- `areaOf(user)` → set of district ids:
+  - `DISTRICT` → `{ user.district_id }`
+  - `PROVINCIAL` → every district in the posting district's province
+  - `NATIONAL` → all districts
+- `districtOfInstallation(inst)` = district of `inst.substation_id`.
+- An installation is **in the area** if its district is in the area set.
+- A **region is inside the area** if every one of its districts is in the area set (district → itself; province → its districts; substation → its district; national → caller is `NATIONAL`).
+- Answers:
+  - single installation (and its readings, overview, credential) outside the area → 404 `40401`
+  - region in a path or filter, or a substation in a filter or body, outside the area → 403 `40302`
+- Provinces, districts and substations are readable by every user (no area check).
+
+### 7.7 Device credentials
+
+- Secret = `crypto.randomBytes(32).toString('base64url')` (no padding).
+- Stored hash = `crypto.createHash('sha256').update(secret, 'utf8').digest('hex')`. (Same as the seed tool.)
+- Store `device_secret_hash` and `device_secret_issued_at = now`. Do not change `updated_at`.
+- The secret is returned once and never stored in plain text.
+- Removed (both fields set to `null`) when the installation becomes `DECOMMISSIONED`.
+
+### 7.8 Passwords
+
+- `bcryptjs.hash(password, 10)`. Length 10–72 characters.
+- `password_changed_at = now` on create, change and reset (this revokes older tokens through `ver`).
+- Never returned.
+
+### 7.9 Bootstrap admin
+
+- At start-up, if the `users` collection is empty:
+  - `BOOTSTRAP_ADMIN_PASSWORD` missing → exit with an error.
+  - Create `{ user_id: randomUUID(), name: "HQ Administrator", username: BOOTSTRAP_ADMIN_USERNAME, role: "ADMIN", jurisdiction_level: "NATIONAL", district_id: 1 }` with the hashed password.
+- If any user exists, do nothing.
+
+### 7.10 Origin guard
+
+- When `ORIGIN_SECRET` is non-empty, every request (tooling included) must carry `X-Origin-Secret` equal to it (`timingSafeEqual`), else 403 `40309`.
+- When empty, the guard is skipped.
 
 ---
 
-## 5. Request / Response Representations
+## 8. Derived values (`lib/derived.js`)
 
-### 5.1 Conventions and Envelope
+Constants: reporting interval 15 min; silent threshold 30 min; Sri Lanka offset +05:30 (no DST).
 
-- `Content-Type: application/json; charset=utf-8` on every body, via `res.json()`.
-- `Accept` must allow `application/json` (or `application/*`, `*/*`, absent), else 406. POST/PUT bodies must be `application/json` (except `/token`: `application/x-www-form-urlencoded`), else 415. Malformed JSON → 400.
-- Fields snake_case. Unknown body fields → 400.
-- Timestamps ISO 8601, returned in UTC (`Z`); input must carry an offset.
-- `power_kw`, `energy_kwh`, `capacity_kw`: up to 3 decimals. `voltage`: 1 decimal.
-- Every URL in headers and bodies is absolute (`PUBLIC_BASE_URL`).
-- **Every collection** uses this envelope:
-
-```json
-{
-  "count": 672,
-  "next": "https://<host>/solar/v1.0/installations/3f0c…/readings?offset=20&limit=20",
-  "previous": null,
-  "items": [ ]
-}
-```
-
-- `count` = total matches. `next`/`previous` keep all other parameters; `null` at the ends. No matches → 200 with `"items": []`.
-
-### 5.2 Error Response
-
-Every 4xx and 5xx:
-
-```json
-{
-  "code": 40001,
-  "message": "The request body has invalid fields.",
-  "description": "Validation failed",
-  "more_info": "https://<host>/solar/v1.0/docs#errors",
-  "error": [ { "code": 40001, "message": "capacity_kw must be greater than 0" } ]
-}
-```
-
-- `code` and `message` always present; `error` only for several field problems. 500 → `code` 50001, no stack trace.
-
-| Code | HTTP | Meaning |
-|---|---|---|
-| 40001 | 400 | Invalid request body or field values |
-| 40002 | 400 | Invalid or unknown query parameter |
-| 40003 | 400 | Invalid time value or window |
-| 40004 | 400 | Reading value out of range |
-| 40005 | 400 | Energy counter out of order |
-| 40101 | 401 | Missing token |
-| 40102 | 401 | Invalid, expired or revoked token |
-| 40103 | 401 | Wrong credentials |
-| 40301 | 403 | Token lacks the required scope |
-| 40302 | 403 | Area outside your jurisdiction |
-| 40303 | 403 | `If-Match` required |
-| 40304 | 403 | Installation is decommissioned |
-| 40305 | 403 | An ADMIN cannot change or delete their own account |
-| 40306 | 403 | A device may write only its own installation |
-| 40307 | 403 | Current password is wrong |
-| 40308 | 403 | You can only change your own password |
-| 40309 | 403 | Direct access not allowed; use the HTTPS URL |
-| 40401 | 404 | Resource not found |
-| 40402 | 404 | Installation has no readings yet |
-| 40501 | 405 | Method not allowed |
-| 40601 | 406 | Requested media type not supported |
-| 40901 | 409 | A different reading exists for this time |
-| 40902 | 409 | `meter_id` already in use |
-| 40903 | 409 | Installation has readings; decommission it instead |
-| 40904 | 409 | `username` already in use |
-| 41201 | 412 | `If-Match` does not match |
-| 41501 | 415 | Request body must be `application/json` |
-| 50001 | 500 | Unexpected server error |
-
-### 5.3 Headers and Conditional Requests
-
-| Header | When |
-|---|---|
-| `ETag` | every successful GET, every 201 and PUT, every 304 — strong: `"` + first 32 hex of SHA-256(body) + `"`. **Generation summaries: hash the body without `computed_at`** |
-| `Last-Modified` | every successful GET, every 201 and PUT (values below) |
-| `Location` + `Content-Location` | every 201 |
-| `Content-Location` | last-known reading; identical reading retry |
-| `WWW-Authenticate` | every 401: `Bearer realm="solar"` (bad or expired token adds `error="invalid_token"`); on `/token`: `Basic realm="solar"` |
-| `Cache-Control: no-store` + `Pragma: no-cache` | `/token`, device credential, password |
-| `Allow` | every 405 — the methods the path supports (e.g. `GET, PUT, DELETE`) |
-
-| Resource | Last-Modified value |
-|---|---|
-| Province, district, substation (+ their collections) | `updated_at` (seed time) |
-| Installation, user | `updated_at` |
-| Reading, last-known reading | `received_at` |
-| Readings collection | newest `received_at` of the installation |
-| Installations list, users list, overview, summaries, region readings | time the response is built |
-
-- **Conditional GET:** `If-None-Match` matches → 304, empty body, `ETag` header. Else `If-Modified-Since` not older than `Last-Modified` → 304. `If-None-Match` wins.
-- **Time precision:** `Last-Modified` is an HTTP date (`toUTCString()`, whole seconds). Compare `If-Modified-Since` with the stored time rounded down to the second.
-- **Conditional writes:** PUT and DELETE on installations and users require `If-Match`. Missing → 403 `40303`; not matching → 412 `41201`.
-
-### 5.4 Endpoints
-
-#### 5.4.1 `POST /token`
-
-**Request (user)** — `Content-Type: application/x-www-form-urlencoded`
-```
-grant_type=password&username=colombo.analyst&password=…
-```
-**Request (device)** — plus `Authorization: Basic base64(installation_id:device_secret)`
-```
-grant_type=client_credentials
-```
-**Response (200)**, `Cache-Control: no-store`, `Pragma: no-cache`:
-```json
-{ "access_token": "…", "token_type": "Bearer", "expires_in": 3600, "scope": "geography:read generation:read account:write" }
-```
-- Missing/unknown `grant_type` or fields → 400 `40001`. Body not form-encoded → 415.
-- Wrong credentials or no credential issued → 401 `40103`, `WWW-Authenticate: Basic realm="solar"` (one message for every case).
-- Device of a DECOMMISSIONED installation → 401 `40103`, like every other credential failure: decommissioning removed its credential, so it cannot be authenticated (03 E4, EP1).
-- Errors use the 5.2 body (not RFC 6749's `error` field).
-
-#### 5.4.2 Geography
-
-**Response (200)** — `GET /solar/v1.0/districts/colombo`
-```json
-{ "district_id": "colombo", "name": "Colombo", "province_id": "western" }
-```
-- Province: `{ "province_id", "name" }`. Substation: `{ "substation_id", "name", "district_id" }`.
-- Unknown id → 404 `40401`. Filter value that does not exist → 400 `40002`.
-- All three are public reference data: no area narrowing, no area errors.
-
-#### 5.4.3 Installations
-
-**Response (200)** — `GET /solar/v1.0/installations/3f0c…`
-```json
-{ "installation_id": "3f0c…", "meter_id": "SLM-10002345", "capacity_kw": 5.0, "status": "ACTIVE", "substation_id": "kotugoda" }
-```
-- **POST** body `{ "meter_id", "capacity_kw", "substation_id" }` (all required; `status` not accepted, set to ACTIVE) → 201 + `Location` + `Content-Location` + `ETag` + `Last-Modified`, body = representation. Invalid fields (`meter_id` 3–32 of `A–Z 0–9 -`; `capacity_kw` > 0 and ≤ 1000) or unknown `substation_id` → 400 `40001`; substation outside area → 403 `40302`; `meter_id` taken (by any installation) → 409 `40902`.
-- **PUT** body `{ "meter_id", "capacity_kw", "status", "substation_id" }` (all required) + `If-Match` → 200. Changing `substation_id` needs both substations in area (else 403 `40302`). `status` ACTIVE ↔ DECOMMISSIONED. Decommissioning clears the device credential; reactivating needs a new one (5.4.8).
-- **DELETE** + `If-Match` → 200 with the deleted representation. Has readings → 409 `40903`. Second DELETE → 404.
-
-#### 5.4.4 `GET /installations/:id/overview`
-
-**Response (200):**
-```json
-{
-  "installation": { "installation_id": "3f0c…", "meter_id": "SLM-10002345", "capacity_kw": 5.0, "status": "ACTIVE", "substation_id": "kotugoda" },
-  "substation":   { "substation_id": "kotugoda", "name": "Kotugoda" },
-  "district":     { "district_id": "gampaha", "name": "Gampaha" },
-  "province":     { "province_id": "western", "name": "Western" },
-  "reporting_status": "REPORTING",
-  "last_known_reading": { "reading_id": "…", "installation_id": "3f0c…", "recorded_at": "2026-10-04T08:15:00Z", "power_kw": 3.412, "energy_kwh": 10234.551, "voltage": 236.4 }
-}
-```
-- `reporting_status` null when DECOMMISSIONED; `last_known_reading` null when no readings.
-
-#### 5.4.5 `GET /installations/:id/last-known-reading`
-
-- 200: the reading (5.4.6) with the newest `recorded_at`; `Content-Location` = that reading's URI.
-- No readings → 404 `40402`.
-
-#### 5.4.6 Readings
-
-**Response (200)** — `GET /solar/v1.0/installations/3f0c…/readings/9a1b…`
-```json
-{ "reading_id": "9a1b…", "installation_id": "3f0c…", "recorded_at": "2026-10-04T06:15:00Z", "power_kw": 3.412, "energy_kwh": 10234.551, "voltage": 236.4 }
-```
-
-**POST (device token)** — body `{ "recorded_at", "power_kw", "energy_kwh", "voltage" }`; `installation_id` not accepted.
-- Path id ≠ token `sub` → 403 `40306`. DECOMMISSIONED → 403 `40304` (from the token check). A deleted installation fails the token check → 401 `40102`.
-- 400 `40003`: `recorded_at` without offset, > 2 minutes in the future, or > 7 days old.
-- 400 `40004`: `power_kw` < 0 or > `capacity_kw` × 1.05; `voltage` outside 180–270; `energy_kwh` < 0.
-- 400 `40005`: `energy_kwh` below the reading just before, or above the reading just after, in `recorded_at` order.
-- Same `recorded_at` exists: identical values → 200 (existing reading, `Content-Location`); different → 409 `40901`.
-- Success → 201 + `Location` + `Content-Location` + `ETag` + `Last-Modified` (= `received_at`).
-
-**GET collection** — envelope; `from`, `to`, `sort`, `offset`, `limit` (4.3). No readings → 200, `count: 0`.
-**GET member** — must belong to the installation in the path, else 404.
-
-#### 5.4.7 Generation Summaries
-
-| Path | Allowed callers |
-|---|---|
-| `/districts/:districtId/generation-summary` | area contains the district |
-| `/provinces/:provinceId/generation-summary` | area contains the whole province |
-| `/generation-summary` | NATIONAL only |
-
-**Response (200):**
-```json
-{
-  "area": { "level": "DISTRICT", "id": "colombo", "name": "Colombo" },
-  "day": "2026-10-04",
-  "computed_at": "2026-10-04T08:20:11Z",
-  "current_power_kw": 412.338,
-  "energy_today_kwh": 1820.104,
-  "installations": { "active": 22, "reporting": 20, "silent": 1, "never_reported": 1, "decommissioned": 1 }
-}
-```
-- National: `"area": { "level": "NATIONAL", "id": null, "name": "Sri Lanka" }`. Unknown id → 404; not allowed → 403 `40302`.
-
-#### 5.4.8 `POST /installations/:id/device-credential`
-
-- No body. Not found / outside area → 404. DECOMMISSIONED → 403 `40304`.
-- **Response (200)**, `Cache-Control: no-store`:
-```json
-{ "installation_id": "3f0c…", "device_secret": "…", "issued_at": "2026-10-04T08:20:11Z" }
-```
-- The old secret, and every token made from it, stops working immediately.
-
-#### 5.4.9 Users
-
-**Response (200)** — `GET /solar/v1.0/users/7c2d…`
-```json
-{ "user_id": "7c2d…", "name": "Nimali Perera", "username": "nimali.p", "role": "ANALYST", "jurisdiction_level": "DISTRICT", "district_id": "kandy" }
-```
-- **POST** `{ "name", "username", "password", "role", "jurisdiction_level", "district_id" }` → 201.
-- **PUT** `{ "name", "username", "role", "jurisdiction_level", "district_id" }` + `If-Match` → 200; `password` field → 400.
-- **DELETE** + `If-Match` → 200.
-- Role `ADMIN` with a level other than NATIONAL → 400 `40001`. Changing or deleting your own account → 403 `40305`. Username taken → 409 `40904`. Password never returned.
-- The password is not part of the representation, so PUT neither sends nor changes it (use 5.4.10).
-- Changes take effect on the user's next request (4.4 re-check); a deleted user's tokens stop working at once.
-
-#### 5.4.10 `POST /users/:id/password`
-
-**Own password** (any user token, `account:write`, `:id` = own id):
-```json
-{ "current_password": "…", "new_password": "…" }
-```
-**Reset another user's** (ADMIN, `users:manage`, `:id` ≠ own id):
-```json
-{ "new_password": "…" }
-```
-**Response (200)**, `Cache-Control: no-store`:
-```json
-{ "user_id": "7c2d…", "password_changed_at": "2026-10-04T08:20:11Z" }
-```
-- Missing field, new password under 10 characters or equal to the current one → 400 `40001`.
-- Current password wrong → 403 `40307`. Another user's id without `users:manage` → 403 `40308`. Unknown user → 404.
-- Sets `password_changed_at`; every older token of that user stops working.
-- GET, PUT, DELETE on this path → 405.
-
-#### 5.4.11 `GET /districts/:id/readings` · `GET /provinces/:id/readings`
-
-- Read-only. Readings of every installation inside the region (any status), as the readings collection envelope.
-- Query: district — `substation-id`; province — `district-id`, `substation-id`; both — `from`, `to`, `sort`, `offset`, `limit` (4.3).
-- Order: `recorded_at` (per `sort`), then `installation_id`, so pages never shift.
-- Region outside the caller's area → 403 `40302`; unknown region → 404 `40401`; filter value not in the region → 400 `40002`.
-- `Last-Modified` = time the response is built. POST → 405 (`Allow: GET`): readings are created only under their installation.
-
-### 5.5 Derived Values
-
-- **Shared helper:** `getLastReading(installationId)` = newest by `recorded_at`. Used by overview, last-known reading, reporting status, summaries.
-- **Reporting status** (ACTIVE only): `NEVER_REPORTED` (no readings) · `SILENT` (newest `recorded_at` older than 30 minutes) · `REPORTING` (otherwise). DECOMMISSIONED → null.
-- **Current power:** sum of the newest `power_kw` of every ACTIVE, REPORTING installation in the area.
-- **Energy today:** for each installation in the area with a reading today (local): newest `energy_kwh` today − (last `energy_kwh` before local midnight, or else first today). Sum.
-- **Counts:** `active`, `decommissioned` by status; `reporting`, `silent`, `never_reported` by reporting status.
+- **Latest reading per installation:** aggregation on `readings`: `$match { installation_id: { $in: ids } }` → `$sort { installation_id: 1, recorded_at: -1 }` → `$group { _id: '$installation_id', doc: { $first: '$$ROOT' } }`. Returns a map id → reading.
+- **Reporting status** (`now` = request time):
+  - `DECOMMISSIONED` → `null`
+  - no reading → `NEVER_REPORTED`
+  - `now − latest.recorded_at > 30 min` → `SILENT`
+  - else → `REPORTING`
+- **Sri Lanka day:** `day` = date of `now + 5h30m` as `YYYY-MM-DD`; `dayStart` = that date at 00:00 +05:30 as a UTC instant.
+- **Energy today** for one installation:
+  - `lastToday` = newest reading with `dayStart ≤ recorded_at ≤ now`. None → contributes 0.
+  - `baseline` = newest reading with `recorded_at < dayStart`; if none, the oldest reading with `recorded_at ≥ dayStart`.
+  - contribution = `lastToday.energy_kwh − baseline.energy_kwh`.
+  - Compute for many installations with aggregations (`$group` with `$first`/`$last` after sorting), not one query per installation.
+- **Summary** over a set of installations:
+  - `active` = count with status ACTIVE; `decommissioned` = count DECOMMISSIONED.
+  - `reporting`, `silent`, `never_reported` = counts of ACTIVE installations by reporting status.
+  - `current_power_kw` = sum of latest `power_kw` of REPORTING installations.
+  - `energy_today_kwh` = sum of energy-today contributions of **all** installations (decommissioned included).
+  - Both sums rounded to 3 decimals.
 
 ---
 
-## 6. Implementation Order
+## 9. Endpoints
 
-**Rule: everything is built and accepted locally (L0–L12) before anything is deployed (D1–D5).** Each phase is one or more commits. Every prompt, every generator mistake found and every fix is logged in `docs/AI-LOG.md` **while the phase is built** — it becomes the report's AI-disclosure appendix and the rubric D4 evidence. A prompt for every phase: `docs/BUILD-PROMPTS.md`; standing rules for the coding agent: `CLAUDE.md`. Status: ❌ · 🔨 · ✅.
+All paths below are after `/solar/v1.0`. Common to every endpoint unless stated: bearer token required; `Accept` checked; GET responses follow §6.7; errors follow §6.10; 401/403 `40301`/405/406 possible everywhere.
 
-**Code layout** (04 §3.2): `routes/` wiring only (path, method, middleware, handler) · `controllers/` read the request and send the response · `lib/` shared logic (area, derived values, ETag, pagination, validation, representations) · `middleware/` · `models/` one per entity. Every path uses `router.route(path)…all(methodNotAllowed(...))` so the 405 and `Allow` sit next to the methods.
+### EP1 — `/token` — POST
+- See §7.2.
 
-### 6.1 Local build
+### EP2 — `/provinces`, `/provinces/{province-id}` — GET
+- Scope `geography:read`.
+- List params: `offset`, `limit`. Sorted by `province_id` ascending.
+- Member: unknown id → 404 `40401`.
 
-| Phase | Work Items | Done when | Depends On | Postman folder | Status |
+### EP3 — `/districts`, `/districts/{district-id}` — GET
+- Scope `geography:read`.
+- List params: `province-id`, `offset`, `limit`. Sorted by `district_id`.
+- Member: unknown id → 404 `40401`.
+
+### EP4 — `/substations`, `/substations/{substation-id}` — GET
+- Scope `geography:read`.
+- List params: `province-id`, `district-id`, `offset`, `limit`. Sorted by `substation_id`.
+- Member: unknown id → 404 `40401`.
+
+### EP5 — Generation summaries — GET
+- Paths: `/districts/{district-id}/generation-summary`, `/provinces/{province-id}/generation-summary`, `/generation-summary`.
+- Scope `generation:read`. No query parameters.
+- Order: unknown district/province → 404 `40401`; region not inside the caller's area → 403 `40302`; national path and caller not `NATIONAL` → 403 `40302`.
+- Installations = all installations whose substation is in the region (any status).
+- Response:
+  ```json
+  {
+    "area": { "level": "DISTRICT", "id": 1, "name": "Colombo" },
+    "day": "2026-10-04",
+    "computed_at": "2026-10-04T08:20:11.000Z",
+    "current_power_kw": 412.338,
+    "energy_today_kwh": 1820.104,
+    "installations": { "active": 26, "reporting": 24, "silent": 1, "never_reported": 1, "decommissioned": 1 }
+  }
+  ```
+  - Province: `"level": "PROVINCIAL"`. National: `{ "level": "NATIONAL", "id": null, "name": "Sri Lanka" }`.
+- ETag ignores `computed_at`. Last-Modified = response time.
+
+### EP6 — `/installations` — GET, POST
+
+**GET** — scope `generation:read`
+- Params: `province-id`, `district-id`, `substation-id`, `status`, `reporting-status`, `offset`, `limit`.
+- Any region filter not inside the caller's area → 403 `40302`.
+- Result: installations in the caller's area ∩ filters, sorted by `installation_id` ascending.
+- `reporting-status` keeps only ACTIVE installations with that status.
+- Filtering and paging are done in memory after loading the area's installations.
+- Items are installation representations (no reporting status).
+
+**POST** — scope `installations:write`, JSON body
+- Body exactly: `meter_id`, `capacity_kw`, `substation_id`.
+  - `status` present → 400 `40001` ("status cannot be set on create"). Any other unknown field → 400 `40001`.
+  - `meter_id`: string matching `^[A-Z0-9-]{3,32}$`.
+  - `capacity_kw`: number, `> 0` and `≤ 1000`.
+  - `substation_id`: integer that exists → else 400 `40001`.
+- Substation not inside the caller's area → 403 `40302`.
+- `meter_id` used by any installation → 409 `40902` (also catch duplicate-key error 11000).
+- Create: new `installation_id`, `status: "ACTIVE"`, credential fields `null`, `created_at = updated_at = now`.
+- Response: §6.9, Location `PUBLIC_BASE_URL/installations/{installation-id}`.
+
+### EP7 — `/installations/{installation-id}` — GET, PUT, DELETE
+
+**GET** — scope `generation:read`
+- Not found or not in the area → 404 `40401`.
+
+**PUT** — scope `installations:write`, JSON body, `If-Match` required
+- Body exactly: `meter_id`, `capacity_kw`, `status`, `substation_id` — all required, same rules as POST; `status` is `ACTIVE` | `DECOMMISSIONED`.
+- Order: body (400) → target not found / not in area (404 `40401`) → new substation not inside area (403 `40302`) → `If-Match` (403 `40303` / 412 `41201`) → `meter_id` used by **another** installation (409 `40902`).
+- Save all four fields, `updated_at = now`.
+- If `status` changes to `DECOMMISSIONED`: set `device_secret_hash` and `device_secret_issued_at` to `null`.
+- Changing `DECOMMISSIONED` → `ACTIVE` does not create a credential.
+- Response 200 (§6.8).
+
+**DELETE** — scope `installations:write`, `If-Match` required
+- Order: not found / not in area (404 `40401`) → `If-Match` → has any reading (409 `40903`) → delete.
+- Response 200, body = the deleted representation.
+
+### EP8 — `/installations/{installation-id}/overview` — GET
+- Scope `generation:read`. Not found / not in area → 404 `40401`.
+- Response:
+  ```json
+  {
+    "installation": { "installation_id": "INS-000004", "meter_id": "SLM-10000004", "capacity_kw": 5, "status": "ACTIVE", "substation_id": 1 },
+    "substation": { "substation_id": 1, "name": "Kolonnawa" },
+    "district": { "district_id": 1, "name": "Colombo" },
+    "province": { "province_id": 1, "name": "Western" },
+    "reporting_status": "REPORTING",
+    "last_known_reading": { "reading_id": 2017, "installation_id": "INS-000004", "recorded_at": "…", "power_kw": 3.412, "energy_kwh": 10234.551, "voltage": 236.4 }
+  }
+  ```
+  - `last_known_reading`: `null` when there is none.
+  - `reporting_status`: `null` when DECOMMISSIONED.
+- Last-Modified = response time.
+
+### EP9 — `/installations/{installation-id}/last-known-reading` — GET
+- Scope `generation:read`.
+- Not found / not in area → 404 `40401`. No readings → 404 `40402`.
+- Body = the newest reading by `recorded_at`. `Content-Location` = `PUBLIC_BASE_URL/installations/{id}/readings/{reading-id}`.
+- Last-Modified = its `received_at`.
+
+### EP10 — `/installations/{installation-id}/readings` — GET, POST
+
+**GET** — scope `generation:read`
+- Params: `from`, `to`, `sort`, `offset`, `limit`.
+- Not found / not in area → 404 `40401`.
+- Query: `installation_id`, `recorded_at` window, sort by `recorded_at` (direction from `sort`), skip/limit, `countDocuments` for `count`.
+
+**POST** — scope `readings:write` (device tokens only), JSON body. Steps in order:
+1. Body exactly: `recorded_at`, `power_kw`, `energy_kwh`, `voltage`, all required.
+   - `installation_id` in the body → 400 `40001` ("installation_id comes from the URL"). Other unknown field → 400 `40001`.
+   - Numbers must be finite JSON numbers → else 400 `40001`. `recorded_at` missing or not a string → 400 `40001`.
+2. `recorded_at` invalid per §6.6, more than 2 minutes in the future, or more than 7 days before now → 400 `40003`.
+3. Path installation ≠ the token's installation → 403 `40306`.
+4. Installation `DECOMMISSIONED` → 403 `40304`.
+5. Ranges → 400 `40004`: `power_kw < 0` or `> capacity_kw × 1.05`; `voltage < 180` or `> 270`; `energy_kwh < 0`.
+6. A reading with the same `installation_id` and `recorded_at` exists:
+   - same `power_kw`, `energy_kwh`, `voltage` → **200**, body = existing reading, `Content-Location` = its URL, plus `ETag`, `Last-Modified`.
+   - different → 409 `40901`.
+7. Counter check: `prev` = newest reading with `recorded_at` < new; `next` = oldest with `recorded_at` > new. `energy_kwh < prev.energy_kwh` or `> next.energy_kwh` → 400 `40005`.
+8. Insert with new `reading_id`, `received_at = now`. Duplicate-key error on (installation, recorded_at) → go back to step 6.
+9. Response: §6.9, Location `PUBLIC_BASE_URL/installations/{id}/readings/{reading-id}`.
+- When several fields fail in one step, `error[]` lists all of them.
+
+### EP11 — `/installations/{installation-id}/readings/{reading-id}` — GET
+- Scope `generation:read`.
+- Installation not found / not in area, reading not found, or reading of another installation → 404 `40401`.
+- Allowed methods: GET only (PUT/DELETE → 405).
+
+### EP12 — `/installations/{installation-id}/device-credential` — POST
+- Scope `credentials:issue`. No body.
+- Not found / not in area → 404 `40401`. DECOMMISSIONED → 403 `40304`.
+- Issue a new secret (§7.7); it replaces any old one.
+- Response 200 (`Cache-Control: no-store`, `Pragma: no-cache`):
+  ```json
+  { "installation_id": "INS-000241", "device_secret": "…", "issued_at": "2026-10-04T08:20:11.000Z" }
+  ```
+- Allowed methods: POST only (GET → 405).
+
+### EP13 — `/users` — GET, POST
+- Scope `users:manage`.
+
+**GET**
+- Params: `district-id`, `role`, `jurisdiction-level`, `offset`, `limit`. Sorted by `username` ascending. No area narrowing.
+
+**POST** — JSON body
+- Body exactly: `name`, `username`, `password`, `role`, `jurisdiction_level`, `district_id`.
+  - `name`: string, 1–100 characters after trimming.
+  - `username`: `^[a-z0-9._-]{3,32}$`.
+  - `password`: string, 10–72 characters.
+  - `role`, `jurisdiction_level`: enums. `district_id`: existing district.
+  - `role: ADMIN` with a level other than `NATIONAL` → 400 `40001`.
+- `username` taken → 409 `40904` (also catch error 11000).
+- Create with `user_id = randomUUID()`, hashed password, `password_changed_at = created_at = updated_at = now`.
+- Response: §6.9, Location `PUBLIC_BASE_URL/users/{user-id}`. Body has no password.
+
+### EP14 — `/users/{user-id}` — GET, PUT, DELETE
+- Scope `users:manage`. Unknown id → 404 `40401`.
+
+**PUT** — JSON body, `If-Match` required
+- Body exactly: `name`, `username`, `role`, `jurisdiction_level`, `district_id` (all required; rules as EP13). `password` present → 400 `40001`.
+- Order: body (400) → not found (404) → `If-Match` (403 / 412) → target is the caller (403 `40305`) → username taken by another user (409 `40904`).
+- Save, `updated_at = now`. Response 200.
+
+**DELETE** — `If-Match` required
+- Order: not found (404) → `If-Match` → target is the caller (403 `40305`) → delete. Response 200, body = deleted representation.
+
+### EP15 — `/users/{user-id}/password` — POST
+- Required scope: `account:write` or `users:manage` (either passes step 5).
+- **Own account** (`user-id` = caller):
+  - Body exactly `current_password`, `new_password` → else 400 `40001`.
+  - `current_password` wrong → 403 `40307`.
+  - `new_password` 10–72 chars and different from the current one → else 400 `40001`.
+- **Another account:**
+  - Caller lacks `users:manage` → 403 `40308` (checked before looking the user up).
+  - Unknown user → 404 `40401`.
+  - Body exactly `new_password` (10–72 chars) → else 400 `40001`.
+- Save new hash, `password_changed_at = updated_at = now`.
+- Response 200 (`Cache-Control: no-store`, `Pragma: no-cache`):
+  ```json
+  { "user_id": "7c2d…", "password_changed_at": "2026-10-04T08:20:11.000Z" }
+  ```
+
+### EP17 — Region readings — GET
+- Paths: `/districts/{district-id}/readings`, `/provinces/{province-id}/readings`.
+- Scope `generation:read`.
+- Params:
+  - district: `substation-id`, `from`, `to`, `sort`, `offset`, `limit`.
+  - province: `district-id`, `substation-id`, `from`, `to`, `sort`, `offset`, `limit`.
+  - A filter value not inside the path region (or a substation not in the given `district-id`) → 400 `40002`.
+- Order: params (400) → unknown region (404 `40401`) → region not inside the caller's area (403 `40302`).
+- Query: installation ids of the region (narrowed by filters), all statuses → readings with those ids and the time window, sorted by `recorded_at` (direction from `sort`) then `installation_id` ascending, skip/limit, `countDocuments` for `count`.
+- Items: reading representations. Last-Modified = response time.
+
+---
+
+## 10. Tooling routes (no token, no `Accept` check)
+
+| Route | Response |
+|---|---|
+| `GET /` | 200 `{ "status": "ok", "service": "slsea-solar-api" }` |
+| `GET /solar/v1.0/openapi` | 200, the OpenAPI document (JSON) |
+| `/solar/v1.0/docs` | Swagger UI (`swagger-ui-express`) loading `/solar/v1.0/openapi` |
+
+**OpenAPI document** (`src/openapi/document.js`, OpenAPI 3.0.3):
+- `servers: [{ url: PUBLIC_BASE_URL }]`.
+- Every path and method in §9 with: summary, parameters (path + query with types and enums), request body schema, every success response with headers, every error status the endpoint can return.
+- Components: schemas for every representation, the collection envelope, the summary, the overview, the token response, and `Error` (§6.10).
+- `securitySchemes`: `oauth2` with flows `password` and `clientCredentials`, both `tokenUrl: PUBLIC_BASE_URL + "/token"`, scopes from §7.1 with one-line descriptions.
+- Each operation lists its required scope under `security`.
+- `If-Match` declared as a **required** header on PUT and DELETE.
+- A short `info.description` covering: how to get a token in Swagger (Authorize → password flow with a test account, or client-credentials with `installation_id` + secret), and the error codes table.
+
+---
+
+## 11. Scripts
+
+- Scripts and `tests/helpers.js` send `X-Origin-Secret: <ORIGIN_SECRET>` on every request when `ORIGIN_SECRET` is non-empty.
+
+### 11.1 `scripts/create-test-accounts.js`
+
+- Gets a token for `BOOTSTRAP_ADMIN_USERNAME` / `BOOTSTRAP_ADMIN_PASSWORD` from `TEST_BASE_URL`.
+- Creates each account below with `POST /users` and password `TEST_ACCOUNT_PASSWORD`. A 409 means it exists: skip.
+- Prints a table of usernames and results.
+
+| username | name | role | level | district_id |
+|---|---|---|---|---|
+| `colombo.analyst` | Colombo Analyst | ANALYST | DISTRICT | 1 |
+| `kandy.analyst` | Kandy Analyst | ANALYST | DISTRICT | 4 |
+| `western.analyst` | Western Analyst | ANALYST | PROVINCIAL | 1 |
+| `central.analyst` | Central Analyst | ANALYST | PROVINCIAL | 4 |
+| `national.analyst` | National Analyst | ANALYST | NATIONAL | 1 |
+| `colombo.officer` | Colombo Officer | INSTALLATION_OFFICER | DISTRICT | 1 |
+| `kandy.officer` | Kandy Officer | INSTALLATION_OFFICER | DISTRICT | 4 |
+
+### 11.2 `scripts/simulate.js` (step D2)
+
+- Reads devices from `SIM_DEVICES_FILE` (JSON array of `{ installation_id, device_secret }`), skipping ids in `SIM_SKIP`.
+- Uses `national.analyst` (password `TEST_ACCOUNT_PASSWORD`) to read each device's installation (`capacity_kw`) and last-known reading (`energy_kwh`) at start.
+- One **tick**, for each device:
+  - Device token via `/token` client credentials (cache each token for 55 minutes).
+  - `recorded_at` = now floored to 15 minutes (UTC).
+  - `power_kw` = 0 outside 06:15–18:00 Sri Lanka time; inside: `capacity_kw × 0.85 × sin(π × (minutesSinceMidnightLocal − 360) / 720)^1.3 × random(0.92–1.0)`, capped at `capacity_kw`, rounded to 3 decimals.
+  - `energy_kwh` = last energy + `power_kw × 0.25`, rounded to 3 decimals. `voltage` = random 215–250, 1 decimal.
+  - `POST /installations/{id}/readings`. 201 or 200 → keep the new energy. Log any other status and continue.
+- Modes: `node scripts/simulate.js --once` (one tick, then exit) and default (tick at every 15-minute boundary + 30 s, forever).
+- Base URL from `TEST_BASE_URL`.
+
+---
+
+## 12. Tests (`tests/`)
+
+- Node's built-in runner (`node:test`, `node:assert/strict`) and global `fetch`. The server must already be running.
+- `tests/helpers.js`: base URL (`TEST_BASE_URL`), `api(method, path, { token, headers, body, form })`, `userToken(username)` (cached), `deviceToken(id, secret)`.
+- Preconditions: database seeded; test accounts created (`npm run accounts`).
+- Write tests create their own installation in Colombo (via `colombo.officer`) with `meter_id` = `TEST-` + a unique suffix (e.g. timestamp), issue its credential and post readings with `recorded_at` inside the last hour.
+- Tests never modify or delete seeded installations (`INS-000001`–`INS-000240`), except read-only checks and refused operations (e.g. DELETE `INS-000003` → 409).
+- Count assertions on seeded areas use `≥` (earlier test runs add records).
+- One file per step: `01-pipeline.test.js`, `02-token.test.js`, `03-geography.test.js`, `04-users.test.js`, `05-installations.test.js`, `06-readings.test.js`, `07-views.test.js`, `08-summaries.test.js`.
+- `smoke.test.js` is **read-only** (safe for production): health, docs, openapi, token for `national.analyst` and `colombo.analyst`, one GET per endpoint family, a 304 round trip, 401 without token, 403 `40301` for an analyst on `/users`, 404 for `INS-000064` as `colombo.analyst`, 403 `40302` for `colombo.analyst` on Kandy's summary.
+
+---
+
+## 13. Build steps
+
+### L0 — Clean repository and scaffold
+- Remove every file and folder except `.git/`, `docs/IMPLEMENTATION-GUIDE.md`, `seed/seed_slsea.py`, `.env` and `seed-output/` (the last two are kept but must never be committed). If `seed/seed_slsea.py` is missing, stop and ask the user for it.
+- Run `git log --all --oneline -- .env seed-output` and record the result in §15 (if anything was ever committed, the user must rotate those secrets).
+- Create: `package.json` (§2, §3.2), `.gitignore` (§3.3), `.env.example` (§4), `seed/requirements.txt`, the folder layout (§3), `src/config.js`, `src/app.js`, `src/server.js` (listen only), `GET /` health route, a minimal `README.md` (how to install and run).
+- **Done when:** `npm install` succeeds with only the §2 dependencies; `npm run dev` starts; `GET /` returns the health JSON; `git status` shows no `.env` or `seed-output/`.
+
+### L1 — Database layer and start-up
+- Models (§5.1, §5.2), connection, `createIndexes`, counters (§5.4), geography cache (§7.6), bootstrap admin (§7.9), full start-up sequence (§5.5).
+- **Done when:** start-up against the seeded Atlas database succeeds; log shows counters at `installation_id` ≥ 240 and `reading_id` ≥ 159312; geography cache holds 9/25/42; `hq.admin` exists after first start and is not created again on restart; no seed index was dropped (`db.readings.getIndexes()` unchanged).
+
+### L2 — HTTP foundation
+- Pipeline order (§6.2): origin guard, tooling bypass, negotiation, 404, 405 helper, error handler, `ApiError` + catalogue (§6.10), `json-body.js`, `lib/http-cache.js` (§6.7, §6.8), `lib/pagination.js` (§6.4), `lib/query.js` (§6.5), `lib/time.js` (§6.6), `lib/representations.js` (§6.3).
+- Tests: `01-pipeline.test.js` (406 with `Accept: text/html` on an API path, 404 `40403`, trailing slash 404, upper-case path 404, health OK with `Accept: text/html`, error body has all five fields, origin guard when `ORIGIN_SECRET` is set).
+- **Done when:** tests pass.
+
+### L3 — Token and authentication
+- `POST /token` (§7.2), `lib/tokens.js`, `lib/secrets.js`, `authenticate.js`, `require-scope.js`, roles → scopes (§7.1), `areaOf` (§7.6).
+- Tests: `02-token.test.js` (admin password grant OK; wrong password 401 `40103` + `WWW-Authenticate`; JSON body → 415; missing `grant_type` → 400; unknown form field ignored; `no-store` header; bad bearer → 401 `40102`; no bearer → 401 `40101`; device grant with `INS-000004` if `seed-output/test-device.json` exists, else skipped; device grant for `INS-000003` → 401 `40103`).
+- **Done when:** tests pass.
+
+### L4 — Geography
+- EP2, EP3, EP4 with pagination, filters, conditional GET.
+- Tests: `03-geography.test.js` (counts 9/25/42; `/districts?province-id=1` count 3; `/substations?district-id=1` count 3; unknown id 404; `/districts/abc` 404; `?limit=101` 400 `40002`; unknown param 400; next/previous links; `If-None-Match` → 304 empty body; `If-Modified-Since` → 304; POST → 405 with `Allow: GET`).
+- **Done when:** tests pass.
+
+### L5 — Users and passwords
+- EP13, EP14, EP15; `scripts/create-test-accounts.js` (§11.1).
+- Tests: `04-users.test.js` (create → 201 + Location that resolves; duplicate username 409; ADMIN + DISTRICT 400; PUT without `If-Match` 403 `40303`; stale 412; admin PUT/DELETE own account 403 `40305`; analyst on `/users` 403 `40301`; own password change → old token 401 `40102`; wrong current password 403 `40307`; analyst changing another user's password 403 `40308`; admin reset OK; DELETE then DELETE → 200 then 404; deleted user's token → 401).
+- **Done when:** tests pass and `npm run accounts` creates all §11.1 accounts (and skips them on a second run).
+
+### L6 — Installations and device credentials
+- EP6, EP7, EP12.
+- Tests: `05-installations.test.js` (`colombo.analyst` list count ≥ 27 and `national.analyst` ≥ 240 — exactly 27 / 240 on a fresh seed, more after write tests; `?district-id=4` as `colombo.analyst` → 403 `40302`; `?reporting-status=NEVER_REPORTED` as `colombo.analyst` → only `INS-000001`; `INS-000064` as `colombo.analyst` → 404; officer POST → 201 + Location, status ACTIVE; `status` in POST body 400; substation 8 as `colombo.officer` → 403; duplicate meter 409; PUT full replace with `If-Match`; PUT missing field 400; PUT to substation 8 → 403; DELETE `INS-000003` → 409 `40903`; credential → 200 + secret + `no-store`; device token works with the new secret; re-issue → old device token 401; decommission via PUT → device token 401 `40102`, `/token` 401 `40103`, credential issue 403 `40304`; analyst POST → 403 `40301`; DELETE new installation without readings → 200).
+- **Done when:** tests pass.
+
+### L7 — Readings
+- EP10 (GET + POST), EP11, EP9.
+- Tests: `06-readings.test.js` (POST → 201 + Location that resolves; identical resend → 200 + Content-Location; changed values same time → 409; `installation_id` in body 400; no offset 400 `40003`; 10 min in future 400 `40003`; 8 days old 400 `40003`; power > capacity × 1.05 → 400 `40004`; voltage 300 → 400 `40004`; energy below previous → 400 `40005`; late reading between two others with consistent counter → 201; device posting to another installation 403 `40306`; analyst POST → 403 `40301`; device GET → 403 `40301`; history `count` 672 for `INS-000004`; `sort=recorded-at:asc` order; `from`/`to` window; `from >= to` 400; last-known of `INS-000001` → 404 `40402`; last-known Content-Location resolves; reading of another installation → 404; PUT on a reading → 405).
+- **Done when:** tests pass.
+
+### L8 — Overview and region readings
+- EP8, EP17.
+- Tests: `07-views.test.js` (overview of `INS-000004` complete; `INS-000001` → `last_known_reading: null`, `NEVER_REPORTED`; `INS-000003` → `reporting_status: null`; `INS-000002` → `SILENT` (if the seed is older than 30 min every seeded site may be SILENT — assert only on `INS-000001`/`INS-000003` exact values); `/districts/1/readings` count = sum for Colombo; `?substation-id=8` on district 1 → 400 `40002`; `colombo.analyst` on `/districts/4/readings` → 403 `40302`; `/provinces/1/readings` as `colombo.analyst` → 403; as `western.analyst` → 200; paging links).
+- **Done when:** tests pass.
+
+### L9 — Generation summaries
+- EP5 with `lib/derived.js` (§8).
+- Tests: `08-summaries.test.js` (district 1 counts: active ≥ 26, decommissioned ≥ 1, never_reported ≥ 1 — exactly 26 / 1 / 1 on a fresh seed; numbers ≥ 0; `colombo.analyst` on district 4 → 403; province 1 as `colombo.analyst` → 403, as `western.analyst` → 200; national as `western.analyst` → 403, as `national.analyst` → 200 with active + decommissioned ≥ 240; admin → 403 `40301`; second request with `If-None-Match` → 304 when nothing changed; posting a reading changes the ETag).
+- **Done when:** tests pass.
+
+### L10 — OpenAPI and Swagger UI
+- `src/openapi/document.js` (§10), `/openapi`, `/docs`.
+- **Done when:** `/solar/v1.0/docs` loads in a browser; Authorize with the password flow (`colombo.analyst`) works and "Try it out" succeeds on `/installations`; client-credentials flow works with a device credential; every endpoint and status in §9 is listed; the document is valid OpenAPI 3.0.3 (no errors shown by Swagger UI).
+
+### L11 — Full acceptance and README
+- Run the full suite against Atlas with the app running on the laptop.
+- Review every endpoint against §9 one more time; fix and log gaps in §15.
+- README: what the API is; local setup (Atlas URI in `.env`, laptop IP in Atlas Network Access, `npm run dev`, `npm run accounts`, `npm test`); seed command (user only); test accounts table; edge-case installations table (§5.3); how to get a token (curl examples for both grants); link to `/docs`; error code table reference.
+- **Done when:** `npm test` passes completely twice in a row (the second run proves tests do not depend on a clean database); README steps work from a fresh clone.
+
+### D1 — Production readiness
+- `ecosystem.config.cjs`: app name `slsea-api`, script `src/server.js`, `node_args: '--env-file=.env'`, `instances: 1`, `autorestart: true`, `max_memory_restart: '300M'`.
+- Confirm the origin guard (§7.10) and `PUBLIC_BASE_URL` are used everywhere (Location, links, `more_info`, OpenAPI `servers` and `tokenUrl`).
+- README: "Deployment" section (EC2 commands: install Node 24, `npm ci --omit=dev`, `pm2 start ecosystem.config.cjs`, `pm2 save`, `pm2 startup`; update: `git pull && npm ci --omit=dev && pm2 reload slsea-api`).
+- **Done when:** app runs under pm2 locally with `ORIGIN_SECRET` set; requests without the header get 403 `40309`; `npm run test:smoke` passes with the header supplied (helpers send `X-Origin-Secret` when `ORIGIN_SECRET` is set).
+
+### D2 — Device simulator
+- `scripts/simulate.js` (§11.2).
+- **Done when:** `npm run simulate -- --once` against local posts one reading per device (except `SIM_SKIP`) with 201s; a second `--once` in the same slot gets 200s; `INS-000004` overview shows `REPORTING`.
+
+---
+
+## 14. Progress
+
+| Step | Status | Date | Commit | Notes |
+|---|---|---|---|---|
+| L0 Clean repo + scaffold | ☑ | 2026-10-06 | COMMIT_HASH | Old files removed; scaffold, config check, `GET /` health; 5 runtime deps only |
+| L1 Database + start-up | ☐ | | | |
+| L2 HTTP foundation | ☐ | | | |
+| L3 Token + authentication | ☐ | | | |
+| L4 Geography | ☐ | | | |
+| L5 Users + passwords | ☐ | | | |
+| L6 Installations + credentials | ☐ | | | |
+| L7 Readings | ☐ | | | |
+| L8 Overview + region readings | ☐ | | | |
+| L9 Generation summaries | ☐ | | | |
+| L10 OpenAPI + Swagger | ☐ | | | |
+| L11 Full acceptance + README | ☐ | | | |
+| D1 Production readiness | ☐ | | | |
+| D2 Device simulator | ☐ | | | |
+
+Status values: ☐ not started · ◐ in progress · ☑ done.
+
+---
+
+## 15. Issues found and fixed
+
+| # | Step | What was wrong | Spec section | Fix | Commit |
 |---|---|---|---|---|---|
-| **L0 — Local setup** | Node 24, local MongoDB 8 (MongoDB Compass optional); repo with README, `.gitignore`, `.env.example`, `nodemon.json`, `ecosystem.config.js`; docs and `postman/` committed; health `GET /` runs with `npm run dev` | `localhost:3000/` returns `{"status":"ok","service":"slsea-solar-api"}`; docs committed before feature code | — | L0 Health | ❌ |
-| **L1 — Seed files** | `scripts/generate-seed.js` → `data/seed/*.json` + `seed-output/` (3.3) | generator prints every check as passed; the four small seed files committed (`readings.json` git-ignored) | L0 | — | ❌ |
-| **L2 — Database** | Mongoose connection (`MONGODB_URI`), one model per entity with indexes (3.2), `scripts/load-seed.js`, `scripts/db-check.js` (3.3) | `npm run seed:load` fills the local database; `npm run db:check` passes every "Expected result" row | L1 | — | ❌ |
-| **L3 — Skeleton** | Express app (`app.set('etag', false)`; strict and case-sensitive routing on every router), base path, origin guard, 5.1 rules, error handler (5.2), 404/405 with `Allow`, Swagger UI + OpenAPI | `GET /solar/v1.0/nothing` → 404 error body; `Accept: application/xml` → 406 | L2 | L3 Skeleton | ❌ |
-| **L4 — Auth** | `POST /token` (form-encoded, Basic for devices), JWT with `iss`/`aud`/`jti`/`ver`, auth middleware with the database re-check, scopes, area helper, out-of-area rules, bootstrap `hq.admin` (4.4, 3.4) | `hq.admin` and the test device get tokens with the right claims; wrong credentials → 401 + `WWW-Authenticate: Basic`; Swagger **Authorize** works (the first protected route arrives in L5, so the 401/403 checks on protected routes run there) | L3 | L4 Auth | ❌ |
-| **L5 — Users** | 5.4.9, 5.4.10 | no token → 401 + `WWW-Authenticate: Bearer`; device token → 403 `40301`; ADMIN with level DISTRICT → 400; ADMIN deleting self → 403 `40305`; password change → old token 401; deleted user's token → 401. **Then run folder L5 Setup** | L4 | L5 Users, then L5 Setup | ❌ |
-| **L6 — Geography** | 5.4.2 + envelope, pagination, filters, ETag/Last-Modified, 304 | `If-None-Match` → 304 empty body; `count` is the total | L5 | L6 Geography | ❌ |
-| **L7 — Installations** | 5.4.3 + `If-Match` | DELETE with readings → 409; PUT without `If-Match` → 403; stale → 412; POST → 201 + Location | L6 | L7 Installations | ❌ |
-| **L8 — Readings** | 5.4.6, 5.4.11 | device POST → 201 and Location returns it; identical retry → 200; window and both sorts work; region readings work | L7 | L8 Readings | ❌ |
-| **L9 — Derived reads** | 5.4.4, 5.4.5, 5.5, `reporting-status` filter | never-reported site → last-known 404, overview `last_known_reading: null` | L8 | L9 Derived reads | ❌ |
-| **L10 — Summaries** | 5.4.7 | 3 routes return; other district → 403; non-national → national 403; "today" in `Asia/Colombo` | L9 | L10 Summaries | ❌ |
-| **L11 — Device credential** | 5.4.8 | new secret → old secret and old device token → 401; decommission → that device's unexpired token gets 403 `40304` on write and a new token request gets 401 `40103` | L7 | L11 Device credential | ❌ |
-| **L12 — Local acceptance** | Whole Postman collection (Newman) against `localhost` + the acceptance checks below; Swagger complete | every test passes locally | L0–L11 | all | ❌ |
-
-### 6.2 Deployment (only after L12 is ✅)
-
-| Phase | Work Items | Done when | Status |
-|---|---|---|---|
-| **D1 — Atlas** | Atlas M0 cluster; database user; network access = EC2 Elastic IP only (temporarily your IP for loading); `npm run seed:load` against Atlas (3.3) | `MONGODB_URI=<atlas> npm run db:check` passes from your machine | ❌ |
-| **D2 — EC2 + pm2** | Instance, Node 24, repo clone, production `.env`, `pm2 start ecosystem.config.js`, `pm2 save` + `pm2 startup` | `curl http://<elastic-ip>:3000/` with the origin header → `{"status":"ok"}`; without it → 403 `40309` | ❌ |
-| **D3 — API Gateway** | HTTP API, routes `ANY /` and `ANY /{proxy+}`, origin-secret header mapping, throttling; `PUBLIC_BASE_URL` = invoke URL; `pm2 reload` | `https://<api-id>.execute-api.<region>.amazonaws.com/` → 200; `/solar/v1.0/docs` live | ❌ |
-| **D4 — Production acceptance** | Folder L5 Setup against production; whole collection (Newman) against the gateway URL; README (URL, accounts, test device); repo shared with the module leader | every test passes in production | ❌ |
-| **D5 — Simulator** | 3.5; GitHub Actions schedule every 15 min during marking | normal sites show REPORTING; summaries show current power | ❌ |
-
-### 6.3 Local setup (L0)
-
-```bash
-node -v                                          # 24.x (≥ 22.12)
-docker run -d --name slsea-mongo -p 27017:27017 mongo:8   # or install MongoDB Community Server 8
-npm install
-cp .env.example .env                             # MONGODB_URI=mongodb://localhost:27017/slsea, secrets
-npm run dev                                      # nodemon → http://localhost:3000/
-```
-- **MongoDB Compass** is optional: handy for looking at the data (3.3).
-
-### 6.4 Deployment runbook (D1–D3)
-
-**D1 — MongoDB Atlas**
-1. Create a free **M0** cluster in the region closest to your EC2 region.
-2. Database Access: a user with read/write on `slsea` only.
-3. Network Access: add your own IP (for loading), later the EC2 Elastic IP; remove your IP after D4.
-4. From your machine: `MONGODB_URI="<atlas connection string>" npm run seed:load`, then `MONGODB_URI="<atlas>" npm run db:check` (3.3).
-
-**D2 — EC2 + pm2**
-1. Set an AWS **budget alert** first. Launch Ubuntu 24.04, `t3.micro`; key pair; security group: SSH 22 from your IP, TCP 3000 from anywhere (`ORIGIN_SECRET` blocks direct use); allocate an **Elastic IP**.
-2. On the instance:
-   ```bash
-   curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash - && sudo apt-get install -y nodejs git
-   sudo npm install -g pm2
-   git clone <your private repo URL> slsea-solar-api && cd slsea-solar-api
-   npm ci --omit=dev
-   nano .env                      # MONGODB_URI (Atlas), JWT_SECRET, BOOTSTRAP_*, ORIGIN_SECRET, PUBLIC_BASE_URL
-   pm2 start ecosystem.config.js
-   pm2 save && pm2 startup        # run the printed command
-   ```
-
-**D3 — API Gateway (HTTP API)**
-1. Integration: HTTP URL `http://<elastic-ip>:3000/{proxy}`; routes `ANY /{proxy+}` and `ANY /` (root → `http://<elastic-ip>:3000/`).
-2. Parameter mapping on the integration: **overwrite header** `x-origin-secret` = your `ORIGIN_SECRET`.
-3. Stage `$default`, auto-deploy; throttling rate 50, burst 100.
-4. Put the invoke URL in `PUBLIC_BASE_URL` (then `pm2 reload slsea-api`), the README and the Postman production environment.
-
-**Every later deploy:** `git pull && npm ci --omit=dev && pm2 reload slsea-api`.
-
-### 6.5 Testing with Postman
-
-- Collection `postman/slsea-solar-api.postman_collection.json`; environment templates `postman/local.postman_environment.json` and `postman/production.postman_environment.json` (committed, secrets empty).
-- Copy a template to `postman/local.private.postman_environment.json` (git-ignored) and fill: `admin_password` (= `BOOTSTRAP_ADMIN_PASSWORD`), `test_password`, `device_installation_id`, `device_secret` (the test device, from `seed-output/`). Production also needs `ec2_direct_url`.
-- Folder names show their phase (`L0 Health` … `L11 Device credential`, `D4 Production only`). A phase is ✅ only when its folder passes.
-- **Tokens are automatic:** a request with `Authorization: Bearer {{tok_<name>}}` gets a fresh token from the collection's pre-request script (`tok_admin`, `tok_device`, `tok_colombo_analyst`, …).
-- **Contract checks run on every response** (collection test script, tests named `[contract]`): JSON content type, snake_case keys, no `_id`/secret fields, the 5.2 error body with a code matching the status, `WWW-Authenticate` on 401, `Allow` on 405, Location/Content-Location/ETag/Last-Modified on 201, ETag/Last-Modified on GET 200, empty body on 304.
-- Later folders use ids saved by earlier ones (e.g. the Kandy installation from L7). Run a phase together with the folders before it: `npm run test:local -- --folder "L7 Installations" --folder "L8 Readings"`, or the whole collection (L12 / D4).
-- Newman: `npm run test:local` (L12) or `npm run test:prod` (D4).
-
-**Checks for every phase** (coding agent)
-- Paths: lower case, hyphens, nouns only, no trailing slash; no global `/readings`. `/Provinces` and `/provinces/` → 404.
-- Every path has a 405 handler for other methods, with the `Allow` header.
-- OpenAPI: `If-Match` declared as a required header on every PUT and DELETE; every scope listed per operation.
-- Bodies: snake_case, `res.json()`, FK id fields present, no extra wrapper.
-- POST that creates → 201 + Location that resolves; PUT replaces (never merges); no PATCH; second DELETE → 404.
-- 401 always with `WWW-Authenticate`; 401 and 403 never swapped; secrets and tokens never logged.
-- Device installation taken from the token, never the body; counter checked in `recorded_at` order.
-
-**Acceptance checks (L12 locally, D4 in production)**
-- [ ] Every collection returns `count`, `next`, `previous`.
-- [ ] Readings: time window, sort both ways, pagination.
-- [ ] Conditional GET → 304 with empty body (member, collection, last-known reading).
-- [ ] POST reading → 201 + Location that returns the reading; identical retry → 200; conflicting → 409.
-- [ ] `colombo.analyst`: Kandy installation → 404; `?district-id=kandy` → 403.
-- [ ] Device token: reading anything → 403 `40301`; writing another installation → 403 `40306`.
-- [ ] `colombo.officer`: create → PUT with If-Match → decommission → that device's writes refused.
-- [ ] DELETE with readings → 409; DELETE NEVER_REPORTED site → 200; again → 404.
-- [ ] ADMIN with non-NATIONAL level → 400; `hq.admin` deleting itself → 403.
-- [ ] A user changes their password → their old token gets 401, and a token requested straight afterwards works; a deleted user's token gets 401.
-- [ ] Swagger **Authorize** (password and client-credentials flows) obtains tokens.
-- [ ] `colombo.analyst`: `/districts/colombo/readings?from=…&to=…` → 200; `/districts/kandy/readings` → 403.
-- [ ] (D4 only) A request straight to the EC2 instance (no gateway) → 403 `40309`.
-- [ ] `Accept: application/xml` → 406; `Content-Type: text/plain` body → 415.
-- [ ] District, province and national summaries; national refused for non-national users.
-- [ ] Every error uses the 5.2 body.
+| 1 | L0 | `git log --all --oneline -- .env seed-output` returned no commits: `.env` and `seed-output/` were never committed; no secrets to rotate | §13 L0 | None needed; both git-ignored (§3.3) | — |
 
 ---
 
-## 7. Future Considerations
+## 16. Open questions
 
-- National-level readings collection (all regions in one call)
-- Password reset by email (self-service)
-- Meter swap where the new meter cannot continue the old counter (readings would record their `meter_id`; 02 L6)
-- Audit log of who changed installations and users
-- Refresh tokens; a full OAuth authorization server (authorization-code flow with a login UI)
-- Cursor-based pagination for the growing readings history
-- Retention policy for old readings
-- Several EC2 instances behind the gateway (the database is already shared)
-- Batch upload of buffered readings
-- Rate limiting and monitoring
+| # | Step | Question | Answer (from the user) |
+|---|---|---|---|
+| | | | |
+
+---
+
+## 17. Change log (specification edits)
+
+| # | Date | Step | Section | New statement |
+|---|---|---|---|---|
+| | | | | |
