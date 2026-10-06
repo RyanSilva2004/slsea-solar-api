@@ -6,6 +6,7 @@ import notFound from './middleware/not-found.js';
 import errorHandler from './middleware/error-handler.js';
 import toolingRouter from './routes/tooling.js';
 import tokenRouter from './routes/token.js';
+import geographyRouter from './routes/geography.js';
 
 const app = express();
 
@@ -22,6 +23,7 @@ app.use(toolingRouter);
 app.use(negotiation);
 // API routers (§3.1)
 app.use('/solar/v1.0', tokenRouter);
+app.use('/solar/v1.0', geographyRouter);
 app.use(notFound);
 app.use(errorHandler);
 

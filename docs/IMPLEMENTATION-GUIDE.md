@@ -617,6 +617,7 @@ Every 4xx and 5xx body:
   - single installation (and its readings, overview, credential) outside the area → 404 `40401`
   - region in a path or filter, or a substation in a filter or body, outside the area → 403 `40302`
 - Provinces, districts and substations are readable by every user (no area check).
+- EP2, EP3, EP4 lists and members are served from this cache (filtering and paging in memory).
 
 ### 7.7 Device credentials
 
@@ -1010,7 +1011,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 
 ### L4 — Geography
 - EP2, EP3, EP4 with pagination, filters, conditional GET.
-- Tests: `03-geography.test.js` (counts 9/25/42; `/districts?province-id=1` count 3; `/substations?district-id=1` count 3; unknown id 404; `/districts/abc` 404; `?limit=101` 400 `40002`; unknown param 400; next/previous links; `If-None-Match` → 304 empty body; `If-Modified-Since` → 304; POST → 405 with `Allow: GET`; no token → 401 `40101` with `WWW-Authenticate: Bearer realm="solar"`; device token → 403 `40301`).
+- Tests: `03-geography.test.js` (counts 9/25/42; `/districts?province-id=1` count 3; `/substations?district-id=1` count 3; unknown id 404; `/districts/abc` 404; `?limit=101` 400 `40002`; unknown param 400; next/previous links; `If-None-Match` → 304 empty body; `If-Modified-Since` → 304; POST → 405 with `Allow: GET`; no token → 401 `40101` with `WWW-Authenticate: Bearer realm="solar"`; device token → 403 `40301`). Reads use the bootstrap admin token (test accounts arrive in L5); the device test uses `INS-000004` from `seed/seed-output/test-device.json` and is skipped if the file is missing.
 - **Done when:** tests pass.
 
 ### L5 — Users and passwords
@@ -1068,8 +1069,8 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 | L1 Database + start-up | ☑ | 2026-10-06 | b382a88 | 7 models + §5.2 indexes; counters 240 / 159312; geography 9/25/42; `hq.admin` created on first start, skipped on restart; seed indexes unchanged |
 | L2 HTTP foundation | ☑ | 2026-10-06 | 73a742b | Pipeline origin → tooling → negotiation → routers → 404 → error handler; `ApiError` + catalogue; json-body, http-cache, pagination, query, time, representations; `01-pipeline.test.js` 10/10 (origin guard run with `ORIGIN_SECRET` set) |
 | L3 Token + authentication | ☑ | 2026-10-06 | 6fd605f | `POST /token` password + client-credentials grants; `lib/tokens.js` (HS256, iss/aud, role scopes), `lib/secrets.js`, `authenticate.js`, `require-scope.js`, `areaOf`; `02-token.test.js` 16/16 (device grant with `INS-000004` ran) |
-| L3a Auth hardening | ☑ | 2026-10-07 | | `security-headers.js` (step 0), `tokenLimiter` (10 failures / 15 min per key, success resets, keyless requests skipped), `DUMMY_HASH` equal-time login, `lib/audit.js` (`token_rejected`, `rate_limited`), 16kb form/JSON limits, 429 `42901`, `BOOTSTRAP_ADMIN_PASSWORD` 10–72 check; filter-validation review found nothing to fix; `npm test` 33 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process |
-| L4 Geography | ☐ | | | |
+| L3a Auth hardening | ☑ | 2026-10-07 | d1d96eb | `security-headers.js` (step 0), `tokenLimiter` (10 failures / 15 min per key, success resets, keyless requests skipped), `DUMMY_HASH` equal-time login, `lib/audit.js` (`token_rejected`, `rate_limited`), 16kb form/JSON limits, 429 `42901`, `BOOTSTRAP_ADMIN_PASSWORD` 10–72 check; filter-validation review found nothing to fix; `npm test` 33 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process |
+| L4 Geography | ☑ | 2026-10-07 | | `routes/geography.js` + `controllers/geography.js`: EP2–EP4 lists (filters `province-id`, `district-id`, paging, links) and members from the geography cache; `authenticate` → `requireScope('geography:read')`; conditional GET with collection-latest / member `updated_at`; `03-geography.test.js` 17/17; `npm test` 50 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process |
 | L5 Users + passwords | ☐ | | | |
 | L6 Installations + credentials | ☐ | | | |
 | L7 Readings | ☐ | | | |
@@ -1140,3 +1141,5 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 30 | 2026-10-07 | L3a | §12 | A third and fourth full test run in a row on the same server process pass without 429 |
 | 31 | 2026-10-07 | L3a | §13 L3a | `02b` adds: success resets the count after 3 failures; 15 missing-`grant_type` requests all 400 |
 | 27 | 2026-10-07 | L3a (review) | §12, §13 | New step L3a and `02b-hardening.test.js`; rate-limit tests use isolated keys; L4–L7, L10, L11, D1, D2 checks extended |
+| 32 | 2026-10-07 | L4 | §7.6 | EP2–EP4 lists and members are served from the geography cache (in-memory filtering and paging) |
+| 33 | 2026-10-07 | L4 | §13 L4 | `03-geography.test.js` reads with the bootstrap admin token; device test uses `INS-000004` from `seed/seed-output/test-device.json`, skipped if missing |
