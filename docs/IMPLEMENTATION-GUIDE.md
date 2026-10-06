@@ -995,7 +995,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 | L0 Clean repo + scaffold | ☑ | 2026-10-06 | 5248780 | Old files removed; scaffold, config check, `GET /` health; 5 runtime deps only |
 | L1 Database + start-up | ☑ | 2026-10-06 | b382a88 | 7 models + §5.2 indexes; counters 240 / 159312; geography 9/25/42; `hq.admin` created on first start, skipped on restart; seed indexes unchanged |
 | L2 HTTP foundation | ☑ | 2026-10-06 | 73a742b | Pipeline origin → tooling → negotiation → routers → 404 → error handler; `ApiError` + catalogue; json-body, http-cache, pagination, query, time, representations; `01-pipeline.test.js` 10/10 (origin guard run with `ORIGIN_SECRET` set) |
-| L3 Token + authentication | ☑ | 2026-10-06 | (pending) | `POST /token` password + client-credentials grants; `lib/tokens.js` (HS256, iss/aud, role scopes), `lib/secrets.js`, `authenticate.js`, `require-scope.js`, `areaOf`; `02-token.test.js` 16/16 (device grant with `INS-000004` ran) |
+| L3 Token + authentication | ☑ | 2026-10-06 | 6fd605f | `POST /token` password + client-credentials grants; `lib/tokens.js` (HS256, iss/aud, role scopes), `lib/secrets.js`, `authenticate.js`, `require-scope.js`, `areaOf`; `02-token.test.js` 16/16 (device grant with `INS-000004` ran) |
 | L4 Geography | ☐ | | | |
 | L5 Users + passwords | ☐ | | | |
 | L6 Installations + credentials | ☐ | | | |
@@ -1017,7 +1017,7 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 |---|---|---|---|---|---|
 | 1 | L0 | `git log --all --oneline -- .env seed-output` returned no commits: `.env` and `seed-output/` were never committed; no secrets to rotate | §13 L0 | None needed; both git-ignored (§3.3) | — |
 | 2 | L1 | Bootstrap admin (own code) rejected a `BOOTSTRAP_ADMIN_PASSWORD` shorter than 10 characters; §7.9 only requires it to be present | §7.9 | Check reduced to "missing → exit" | b382a88 |
-| 3 | L3 | Spec paths named `seed-output/` at the repo root; the seed output is in `seed/seed-output/`, so the `INS-000004` device test would always be skipped | §0, §3, §3.3, §4, §5.3, §13 L3 | Paths changed to `seed/seed-output/` (user's decision); `.env.example` and `.gitignore` updated | (pending) |
+| 3 | L3 | Spec paths named `seed-output/` at the repo root; the seed output is in `seed/seed-output/`, so the `INS-000004` device test would always be skipped | §0, §3, §3.3, §4, §5.3, §13 L3 | Paths changed to `seed/seed-output/` (user's decision); `.env.example` and `.gitignore` updated | 6fd605f |
 
 ---
 
