@@ -54,17 +54,6 @@ test('11 failed logins for one username -> the 11th is 429 42901', async () => {
   assertError(await login(probeUsername(), 'wrong-password'), 401, 40103);
 });
 
-test('a successful login resets the failure count of its key', async () => {
-  for (let i = 1; i <= 3; i++) {
-    assertError(await login(adminUsername, 'wrong-password'), 401, 40103);
-  }
-  assert.equal((await login(adminUsername, adminPassword)).status, 200);
-  for (let i = 1; i <= 3; i++) {
-    assertError(await login(adminUsername, 'wrong-password'), 401, 40103);
-  }
-  assert.equal((await login(adminUsername, adminPassword)).status, 200);
-});
-
 test('15 requests with a missing grant_type -> all 400, none 429', async () => {
   for (let i = 1; i <= 15; i++) {
     const res = await api('POST', '/token', { form: { username: probeUsername(), password: 'x' } });

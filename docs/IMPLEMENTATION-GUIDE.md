@@ -1001,7 +1001,6 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
   - unknown username and wrong password for `hq.admin` each take at least 30 ms;
   - 11 failed logins for `probe-<random>` → the 11th is 429 `42901` with `Retry-After`, `Cache-Control: no-store` and the five-field error body;
   - a second unknown username `probe-<random>` still gets 401 (keys are separate);
-  - after 3 failed logins for `hq.admin`, one successful login resets the count (3 more failures still give 401, not 429);
   - 15 requests with a missing `grant_type` → all 400, none 429;
   - 12 successful `hq.admin` logins in a row → all 200;
   - form `username[$ne]=x&password=y&grant_type=password` → 400 `40001`;
@@ -1016,7 +1015,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 
 ### L5 — Users and passwords
 - EP13, EP14, EP15; `scripts/create-test-accounts.js` (§11.1).
-- Tests: `04-users.test.js` (create → 201 + Location that resolves; duplicate username 409; ADMIN + DISTRICT 400; PUT without `If-Match` 403 `40303`; stale 412; admin PUT/DELETE own account 403 `40305`; analyst on `/users` 403 `40301`; own password change → old token 401 `40102`; wrong current password 403 `40307`; analyst changing another user's password 403 `40308`; admin reset OK; DELETE then DELETE → 200 then 404; deleted user's token → 401; JSON body over 16kb → 400 `40001`; `"username": { "$gt": "" }` → 400 `40001`).
+- Tests: `04-users.test.js` (create → 201 + Location that resolves; duplicate username 409; ADMIN + DISTRICT 400; PUT without `If-Match` 403 `40303`; stale 412; admin PUT/DELETE own account 403 `40305`; analyst on `/users` 403 `40301`; own password change → old token 401 `40102`; wrong current password 403 `40307`; analyst changing another user's password 403 `40308`; admin reset OK; DELETE then DELETE → 200 then 404; deleted user's token → 401; JSON body over 16kb → 400 `40001`; `"username": { "$gt": "" }` → 400 `40001`; rate-limit reset: create `probe-reset-<random>` as `hq.admin`, 9 failed logins → all 401, 1 successful login → 200, 9 more failed logins → all 401 (none 429), a 10th failure → 401, an 11th failure → 429 `42901`, then delete the user).
 - **Done when:** tests pass and `npm run accounts` creates all §11.1 accounts (and skips them on a second run).
 
 ### L6 — Installations and device credentials
@@ -1070,8 +1069,8 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 | L2 HTTP foundation | ☑ | 2026-10-06 | 73a742b | Pipeline origin → tooling → negotiation → routers → 404 → error handler; `ApiError` + catalogue; json-body, http-cache, pagination, query, time, representations; `01-pipeline.test.js` 10/10 (origin guard run with `ORIGIN_SECRET` set) |
 | L3 Token + authentication | ☑ | 2026-10-06 | 6fd605f | `POST /token` password + client-credentials grants; `lib/tokens.js` (HS256, iss/aud, role scopes), `lib/secrets.js`, `authenticate.js`, `require-scope.js`, `areaOf`; `02-token.test.js` 16/16 (device grant with `INS-000004` ran) |
 | L3a Auth hardening | ☑ | 2026-10-07 | d1d96eb | `security-headers.js` (step 0), `tokenLimiter` (10 failures / 15 min per key, success resets, keyless requests skipped), `DUMMY_HASH` equal-time login, `lib/audit.js` (`token_rejected`, `rate_limited`), 16kb form/JSON limits, 429 `42901`, `BOOTSTRAP_ADMIN_PASSWORD` 10–72 check; filter-validation review found nothing to fix; `npm test` 33 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process |
-| L4 Geography | ☑ | 2026-10-07 | | `routes/geography.js` + `controllers/geography.js`: EP2–EP4 lists (filters `province-id`, `district-id`, paging, links) and members from the geography cache; `authenticate` → `requireScope('geography:read')`; conditional GET with collection-latest / member `updated_at`; `03-geography.test.js` 17/17; `npm test` 50 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process |
-| L5 Users + passwords | ☐ | | | |
+| L4 Geography | ☑ | 2026-10-07 | 51e45ec | `routes/geography.js` + `controllers/geography.js`: EP2–EP4 lists (filters `province-id`, `district-id`, paging, links) and members from the geography cache; `authenticate` → `requireScope('geography:read')`; conditional GET with collection-latest / member `updated_at`; `03-geography.test.js` 17/17; `npm test` 50 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process |
+| L5 Users + passwords | ☑ | 2026-10-07 | | `routes/users.js` + `controllers/users.js`: EP13 list (filters `district-id`, `role`, `jurisdiction-level`, sorted by `username`) and create; EP14 GET/PUT/DELETE with `If-Match` and own-account 40305; EP15 own change (current password checked) and admin reset, both revoke older tokens; `lib/validation.js` user/password body rules (every field problem listed); `scripts/create-test-accounts.js` created all 7 accounts, second run skipped all 7; `04-users.test.js` 19/19 (incl. rate-limit reset test moved from `02b`); `npm test` 68 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on four runs in a row on one server process |
 | L6 Installations + credentials | ☐ | | | |
 | L7 Readings | ☐ | | | |
 | L8 Overview + region readings | ☐ | | | |
@@ -1143,3 +1142,5 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 32 | 2026-10-07 | L4 | §7.6 | EP2–EP4 lists and members are served from the geography cache (in-memory filtering and paging) |
 | 33 | 2026-10-07 | L4 | §13 L4 | `03-geography.test.js` reads with the bootstrap admin token; device test uses `INS-000004` from `seed/seed-output/test-device.json`, skipped if missing |
 | 34 | 2026-10-07 | L3a (review) | §12, §13 | New step L3a and `02b-hardening.test.js`; rate-limit tests use isolated keys; L4–L7, L10, L11, D1, D2 checks extended |
+| 35 | 2026-10-07 | L5 | §13 L3a | `02b` no longer has the "3 failures, success, 3 more failures" reset test |
+| 36 | 2026-10-07 | L5 | §13 L5 | `04-users` adds the rate-limit reset test: `probe-reset-<random>`, 9 failures, success, 9 + 1 failures → 401, 11th → 429 `42901`, user deleted |
