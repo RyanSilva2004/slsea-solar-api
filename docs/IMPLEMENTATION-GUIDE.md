@@ -988,7 +988,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 |---|---|---|---|---|
 | L0 Clean repo + scaffold | ☑ | 2026-10-06 | 5248780 | Old files removed; scaffold, config check, `GET /` health; 5 runtime deps only |
 | L1 Database + start-up | ☑ | 2026-10-06 | b382a88 | 7 models + §5.2 indexes; counters 240 / 159312; geography 9/25/42; `hq.admin` created on first start, skipped on restart; seed indexes unchanged |
-| L2 HTTP foundation | ☑ | 2026-10-06 | COMMIT_L2 | Pipeline origin → tooling → negotiation → routers → 404 → error handler; `ApiError` + catalogue; json-body, http-cache, pagination, query, time, representations; `01-pipeline.test.js` 10/10 (origin guard run with `ORIGIN_SECRET` set) |
+| L2 HTTP foundation | ☑ | 2026-10-06 | 73a742b | Pipeline origin → tooling → negotiation → routers → 404 → error handler; `ApiError` + catalogue; json-body, http-cache, pagination, query, time, representations; `01-pipeline.test.js` 10/10 (origin guard run with `ORIGIN_SECRET` set) |
 | L3 Token + authentication | ☐ | | | |
 | L4 Geography | ☐ | | | |
 | L5 Users + passwords | ☐ | | | |
