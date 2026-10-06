@@ -980,7 +980,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 
 | Step | Status | Date | Commit | Notes |
 |---|---|---|---|---|
-| L0 Clean repo + scaffold | ☑ | 2026-10-06 | COMMIT_HASH | Old files removed; scaffold, config check, `GET /` health; 5 runtime deps only |
+| L0 Clean repo + scaffold | ☑ | 2026-10-06 | 5248780 | Old files removed; scaffold, config check, `GET /` health; 5 runtime deps only |
 | L1 Database + start-up | ☐ | | | |
 | L2 HTTP foundation | ☐ | | | |
 | L3 Token + authentication | ☐ | | | |
