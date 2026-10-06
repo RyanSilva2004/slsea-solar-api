@@ -25,7 +25,7 @@ This is the **only** specification for the build. Build exactly what is written 
 - Commit at least once per step. Message format: `L4: geography endpoints` (step id + short summary).
 - Do not add endpoints, fields, query parameters, error codes, dependencies or features that are not in this file.
 - Never change anything in `seed/`.
-- Never commit `.env` or `seed-output/`.
+- Never commit `.env`, `seed-output/` or `seed/seed-output/`.
 - The database is the seeded **MongoDB Atlas** cluster, used from the first step. Never drop a collection, never delete or change seeded records directly in the database, and never run the seed tool.
 - Write tests (`npm test`) may run against Atlas. Every installation they create uses a `meter_id` starting with `TEST-`. The user re-seeds before submission, which removes test data.
 - Keep code plain and readable. Small functions. Comments only where they point to a section of this file (e.g. `// §6.7`).
@@ -69,7 +69,8 @@ This is the **only** specification for the build. Build exactly what is written 
 │   └── IMPLEMENTATION-GUIDE.md      this file
 ├── seed/
 │   ├── seed_slsea.py                seed tool (DO NOT CHANGE)
-│   └── requirements.txt             pymongo>=4.6
+│   ├── requirements.txt             pymongo>=4.6
+│   └── seed-output/                 device secrets written by the seed tool (git-ignored)
 ├── src/
 │   ├── server.js                    start-up sequence (§5.5) incl. bootstrap admin (§7.9), then listen
 │   ├── app.js                       Express app: pipeline order (§6.2), routers, 404/405, error handler
@@ -95,7 +96,7 @@ This is the **only** specification for the build. Build exactly what is written 
 │   │   ├── representations.js       document → JSON shape (§6.3)
 │   │   ├── ids.js                   counters and id formats (§5.4)
 │   │   ├── time.js                  ISO parsing, Sri Lanka day (§6.6, §8)
-│   │   ├── tokens.js                JWT sign/verify (§7.3)
+│   │   ├── tokens.js                JWT sign/verify (§7.3), role → scopes (§7.1)
 │   │   └── secrets.js               device secrets, password hashing (§7.7, §7.8)
 │   └── openapi/
 │       └── document.js              OpenAPI 3.0.3 document as a JS object (§10)
@@ -145,6 +146,7 @@ seed-output/
 __pycache__/
 *.log
 .DS_Store
+seed/seed-output/
 ```
 
 ---
@@ -162,7 +164,7 @@ __pycache__/
 | `ORIGIN_SECRET` | empty locally | no | §7.10; guard is off when empty |
 | `TEST_BASE_URL` | `http://localhost:3000/solar/v1.0` | tests/scripts (default `PUBLIC_BASE_URL`) | §11, §12 |
 | `TEST_ACCOUNT_PASSWORD` | — | tests/scripts | §11.1 |
-| `SIM_DEVICES_FILE` | `seed-output/device-credentials.json` | simulator | §11.2 |
+| `SIM_DEVICES_FILE` | `seed/seed-output/device-credentials.json` | simulator | §11.2 |
 | `SIM_SKIP` | `INS-000002,INS-000065` | simulator (this default) | §11.2 |
 
 - `config.js` stops the process with a clear message if a required variable is missing or invalid.
@@ -294,10 +296,10 @@ Declare exactly these in the schemas (they already exist from the seed for the f
 | `INS-000065` | 4 Kandy | 9 | silent | ACTIVE | yes | 648 |
 | `INS-000066` | 4 Kandy | 8 | decommissioned | DECOMMISSIONED | none | 384 |
 
-- `INS-000004` (Colombo, substation 1) is a normal site; its secret is in `seed-output/test-device.json` on the machine that ran the seed.
+- `INS-000004` (Colombo, substation 1) is a normal site; its secret is in `seed/seed-output/test-device.json` on the machine that ran the seed.
 - The Atlas database is already seeded. Re-seeding is done by the user only (before submission), never by the agent or the app:
   `python3 seed/seed_slsea.py --uri "<MONGODB_URI>" --drop`
-  It writes device secrets to `seed-output/` (git-ignored).
+  run from `seed/` (`cd seed`), so it writes device secrets to `seed/seed-output/` (git-ignored).
 
 ### 5.4 Ids for new records
 
@@ -531,15 +533,19 @@ Every 4xx and 5xx body:
 | INSTALLATION_OFFICER | `geography:read generation:read installations:write credentials:issue account:write` |
 | ADMIN | `geography:read users:manage account:write` |
 
+- `lib/tokens.js` holds this table: `roleScopes(role)` and `DEVICE_SCOPES`.
+
 ### 7.2 `POST /solar/v1.0/token`
 
 - No bearer token. `Allow: POST`.
+- Every `/token` response, errors included, carries `Cache-Control: no-store` and `Pragma: no-cache`.
+- Every 401 `40103` carries `WWW-Authenticate: Basic realm="solar"`.
 - Request `Content-Type` must be `application/x-www-form-urlencoded` → else 415 `41501`. Parse with `express.urlencoded({ extended: false })`.
 - Unknown form fields are **ignored**.
 - `grant_type` missing or not `password` / `client_credentials` → 400 `40001`.
 
 **`grant_type=password` (users)**
-- Fields `username`, `password` required → else 400 `40001`.
+- Fields `username`, `password` required as single non-empty values → else 400 `40001`.
 - Any `Authorization` header is ignored.
 - User not found or `bcrypt.compare` fails → 401 `40103`, `WWW-Authenticate: Basic realm="solar"`.
 - Token: `typ: "user"`, `sub: user_id`, `scope` = role scopes (§7.1), `ver = password_changed_at.getTime()`.
@@ -927,7 +933,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 
 ### L3 — Token and authentication
 - `POST /token` (§7.2), `lib/tokens.js`, `lib/secrets.js`, `authenticate.js`, `require-scope.js`, roles → scopes (§7.1), `areaOf` (§7.6).
-- Tests: `02-token.test.js` (admin password grant OK; wrong password 401 `40103` + `WWW-Authenticate`; JSON body → 415; missing `grant_type` → 400; unknown form field ignored; `no-store` header; bad bearer → 401 `40102`; no bearer → 401 `40101`; device grant with `INS-000004` if `seed-output/test-device.json` exists, else skipped; device grant for `INS-000003` → 401 `40103`).
+- Tests: `02-token.test.js` (admin password grant OK; wrong password 401 `40103` + `WWW-Authenticate`; JSON body → 415; missing `grant_type` → 400; unknown form field ignored; `no-store` header; bad bearer → 401 `40102`; no bearer → 401 `40101`; device grant with `INS-000004` if `seed/seed-output/test-device.json` exists, else skipped; device grant for `INS-000003` → 401 `40103`). Until a route uses a bearer token (L4), the `authenticate.js` checks call the middleware directly, with the test connected to the database.
 - **Done when:** tests pass.
 
 ### L4 — Geography
@@ -989,7 +995,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 | L0 Clean repo + scaffold | ☑ | 2026-10-06 | 5248780 | Old files removed; scaffold, config check, `GET /` health; 5 runtime deps only |
 | L1 Database + start-up | ☑ | 2026-10-06 | b382a88 | 7 models + §5.2 indexes; counters 240 / 159312; geography 9/25/42; `hq.admin` created on first start, skipped on restart; seed indexes unchanged |
 | L2 HTTP foundation | ☑ | 2026-10-06 | 73a742b | Pipeline origin → tooling → negotiation → routers → 404 → error handler; `ApiError` + catalogue; json-body, http-cache, pagination, query, time, representations; `01-pipeline.test.js` 10/10 (origin guard run with `ORIGIN_SECRET` set) |
-| L3 Token + authentication | ☐ | | | |
+| L3 Token + authentication | ☑ | 2026-10-06 | (pending) | `POST /token` password + client-credentials grants; `lib/tokens.js` (HS256, iss/aud, role scopes), `lib/secrets.js`, `authenticate.js`, `require-scope.js`, `areaOf`; `02-token.test.js` 16/16 (device grant with `INS-000004` ran) |
 | L4 Geography | ☐ | | | |
 | L5 Users + passwords | ☐ | | | |
 | L6 Installations + credentials | ☐ | | | |
@@ -1011,6 +1017,7 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 |---|---|---|---|---|---|
 | 1 | L0 | `git log --all --oneline -- .env seed-output` returned no commits: `.env` and `seed-output/` were never committed; no secrets to rotate | §13 L0 | None needed; both git-ignored (§3.3) | — |
 | 2 | L1 | Bootstrap admin (own code) rejected a `BOOTSTRAP_ADMIN_PASSWORD` shorter than 10 characters; §7.9 only requires it to be present | §7.9 | Check reduced to "missing → exit" | b382a88 |
+| 3 | L3 | Spec paths named `seed-output/` at the repo root; the seed output is in `seed/seed-output/`, so the `INS-000004` device test would always be skipped | §0, §3, §3.3, §4, §5.3, §13 L3 | Paths changed to `seed/seed-output/` (user's decision); `.env.example` and `.gitignore` updated | (pending) |
 
 ---
 
@@ -1034,4 +1041,8 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 6 | 2026-10-06 | L2 | §6.9 | `sendCreated(res, body, pathAfterBase, lastModified)` in `lib/http-cache.js` |
 | 7 | 2026-10-06 | L2 | §6.10 | Errors thrown as `new ApiError(code, message, { errors, headers })` |
 | 8 | 2026-10-06 | L2 | §12 | `api()` path may be an absolute URL (tooling routes) |
+| 9 | 2026-10-06 | L3 | §0, §3, §3.3, §4, §5.3 | Seed output lives in `seed/seed-output/` (git-ignored, never committed); `SIM_DEVICES_FILE` example points there |
+| 10 | 2026-10-06 | L3 | §13 L3 | Device test reads `seed/seed-output/test-device.json`; `authenticate.js` checks call the middleware directly until L4 |
+| 11 | 2026-10-06 | L3 | §3, §7.1 | `lib/tokens.js` holds role → scopes: `roleScopes(role)`, `DEVICE_SCOPES` |
+| 12 | 2026-10-06 | L3 | §7.2 | Every `/token` response carries `no-store`/`no-cache`; every 40103 carries `WWW-Authenticate: Basic realm="solar"`; `username`/`password` must be single non-empty values |
 | 2 | 2026-10-06 | L1 | §5.5 | Steps 2–6 each log one line (database, indexes, counters, geography, bootstrap) |

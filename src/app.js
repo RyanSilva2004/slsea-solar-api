@@ -4,6 +4,7 @@ import negotiation from './middleware/negotiation.js';
 import notFound from './middleware/not-found.js';
 import errorHandler from './middleware/error-handler.js';
 import toolingRouter from './routes/tooling.js';
+import tokenRouter from './routes/token.js';
 
 const app = express();
 
@@ -17,7 +18,8 @@ app.set('x-powered-by', false);
 app.use(origin);
 app.use(toolingRouter);
 app.use(negotiation);
-// API routers (§3.1) are mounted on /solar/v1.0 here
+// API routers (§3.1)
+app.use('/solar/v1.0', tokenRouter);
 app.use(notFound);
 app.use(errorHandler);
 

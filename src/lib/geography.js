@@ -47,3 +47,15 @@ export async function loadGeography() {
 export function districtOfInstallation(installation) {
   return districtOfSubstation.get(installation.substation_id);
 }
+
+// Set of district ids the user may see
+export function areaOf(user) {
+  if (user.jurisdiction_level === 'NATIONAL') {
+    return new Set(districtsById.keys());
+  }
+  if (user.jurisdiction_level === 'PROVINCIAL') {
+    const provinceId = provinceOfDistrict.get(user.district_id);
+    return new Set(districtsByProvince.get(provinceId) ?? []);
+  }
+  return new Set([user.district_id]);
+}

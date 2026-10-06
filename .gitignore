@@ -4,3 +4,4 @@ seed-output/
 __pycache__/
 *.log
 .DS_Store
+seed/seed-output/
