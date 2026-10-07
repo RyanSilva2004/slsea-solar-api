@@ -531,7 +531,7 @@ Every 4xx and 5xx body:
 | `Allow` | every 405 |
 | `WWW-Authenticate` | every 401 (values in §7.2, §7.4) |
 | `Retry-After` (whole seconds) | every 429 |
-| `Cache-Control: no-store` + `Pragma: no-cache` | every `/token` response; device credential 200 (EP12); password 200 (EP15) |
+| `Cache-Control: no-store` + `Pragma: no-cache` | every `/token` response, 405 and 406 included (set by `security-headers.js`); device credential 200 (EP12); password 200 (EP15) |
 | `X-Content-Type-Options: nosniff` | every response (set by `security-headers.js`) |
 | `Strict-Transport-Security: max-age=31536000` | every response when `PUBLIC_BASE_URL` starts with `https://` (set by `security-headers.js`) |
 
@@ -1071,7 +1071,16 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 ### L11 — Full acceptance and README
 - Run the full suite against Atlas with the app running on the laptop.
 - Review every endpoint against §9 one more time; fix and log gaps in §15.
-- README: what the API is; local setup (Atlas URI in `.env`, laptop IP in Atlas Network Access, `npm run dev`, `npm run accounts`, `npm test`); seed command (user only); test accounts table; edge-case installations table (§5.3); how to get a token (curl examples for both grants); rate limits (§7.11); link to `/docs`; error code table reference.
+- README sections, in this order:
+  1. Title "SLSEA Real-Time Solar Generation Data API", then a table: Student `Ryan Silva`; NIBM index `BSCCOMP24.2P-059`; Coventry index `16110614`; Module `NB6007CEM Web API Development`; Live API `_to be added_`; Live OpenAPI (Swagger UI) `_to be added_`; Repository = the repository URL.
+  2. "Architecture": the line `<!-- architecture diagram: docs/architecture.png -->`, an empty image link to `docs/architecture.png`, then a one-line request path: client → API Gateway → Caddy → Node/Express → MongoDB Atlas.
+  3. "Features": short points taken only from this file: endpoint groups (token, geography, installations, readings, summaries, users); write–read split (device tokens write, user tokens read); jurisdiction scoping; pagination, filtering, sorting; conditional GET and `If-Match`; the four-field error body (§6.10); rate limits (§7.11); security headers (§6.11); OpenAPI and Swagger UI (§10).
+  4. "Tech stack": versions from `package.json` and §2.
+  5. "Run locally": setup steps (Atlas URI in `.env`, laptop IP in Atlas Network Access, `npm install`, `npm run dev`, `npm run accounts`); seed command (user only); `.env` variable names (§4, names only); npm scripts (§3.2); local URLs: API base `http://localhost:3000/solar/v1.0`, Swagger UI `http://localhost:3000/solar/v1.0/docs`, OpenAPI JSON `http://localhost:3000/solar/v1.0/openapi`, health `http://localhost:3000/`.
+  6. Test accounts table (§11.1), edge-case installations table (§5.3), curl examples (both grants), how to run the tests (`npm test`; `npm run test:smoke` and `npm run simulate` marked as added in D1 / D2).
+  7. "Project structure": one line per folder in `src/`.
+  8. "Deployment": "To be added in D1/AWS steps." (D1 fills it in).
+- The README contains no passwords, secrets or connection strings, and no feature that is not in this file.
 - **Done when:** `npm test` passes completely twice in a row (the second run proves tests do not depend on a clean database); README steps work from a fresh clone.
 
 ### D1 — Production readiness
@@ -1103,7 +1112,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 | L9 Generation summaries | ☑ | 2026-10-07 | 5876a07 | `routes/summaries.js` + `controllers/summaries.js`: EP5 district, province and national summaries (query parameters 400 `40002` → unknown region 404 → area 403 `40302`; national only for `NATIONAL` callers); `lib/derived.js` `energyToday` (two aggregations: today first/last, baseline before the day) and `summary`; `representations.generationSummary`; ETag without `computed_at`; latest-reading and baseline sorts `{ installation_id: -1, recorded_at: -1 }` (DISTINCT_SCAN, 250 keys instead of 143,832; national summary ≈ 0.5 s); district 1 `energy_today_kwh` cross-checked with per-installation queries; `08-summaries.test.js` 8/8; `npm test` 134 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process, 429 only on `probe-` / dedicated `TEST-` keys (review gate: reversed sort, EP5 query parameters 400 first, 304 test on district 4) |
 | L10 OpenAPI + Swagger | ☑ | 2026-10-07 | b24bee7 | `src/openapi/document.js`: OpenAPI 3.0.3, 22 paths / 29 operations (matches the routers one to one), schemas for every representation, collection envelope, summary, overview, token, credential, password and `Error`; per-operation error responses list their codes from the `lib/errors.js` catalogue; `oauth2` password + clientCredentials flows; `info.description` with Swagger token steps, rate limits and the error table (generated from the catalogue); `/openapi`, `/docs` (301 → `docs/`), `/docs/` Swagger UI in `routes/tooling.js` + `controllers/tooling.js`; validated with `@apidevtools/swagger-parser` (scratchpad, not a dependency); headless Firefox: UI loads with `nosniff` and no error panel, password flow as `colombo.analyst` + "Try it out" `GET /installations` → 200, clientCredentials with `INS-000004` → token 200 and `GET /provinces` → 403 `40301`; `01-pipeline.test.js` +3 tests; `npm test` 137 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on the 4th and 5th of five runs in a row on one server process (summaries of runs 1–3 not captured), 429 only on `probe-` / dedicated `TEST-` keys (review gate: `/docs` redirect, 405 placement, filter examples) |
 | L10a Four-field error body | ☑ | 2026-10-07 | 4ac4591 | §6.10 error body is exactly `code`, `message`, `description`, `error` (always an array); `lib/errors.js` `errorBody` and the `config` import trimmed; OpenAPI `Error` schema has the four fields (`additionalProperties: false`) and `info.description` text updated; error-body assertions in `01-pipeline`, `02b-hardening`, `06-readings` expect four fields, `01-pipeline` also checks `error: []` without field problems; §16 Q6/Q7 answered; status codes, error codes and headers unchanged; OpenAPI document validates (swagger-parser); `npm test` 137 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process (review gate approved: step text names the field via §16 Q6, `additionalProperties: false` on `Error`, extra `error: []` check) |
-| L11 Full acceptance + README | ☐ | | | |
+| L11 Full acceptance + README | ☑ | 2026-10-07 | (L11) | Endpoint review against §9 (code read + live probes of 405/406/415/304/If-Match/filters/paging per family): one gap fixed (§15 #10); `02-token` no-store test also covers 405 and 406; README rewritten in the §13 L11 section order, no secrets; fresh clone (scratchpad): `npm install`, `.env`, `npm run dev`, `npm run accounts` (all 7 skipped), health, `/docs` 301, `/docs/` 200, `/openapi` 200; `npm test` 137 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on two runs in a row on one server process after the fix (one run before it, same result), 429 only on `probe-` / dedicated `TEST-` keys |
 | D1 Production readiness | ☐ | | | |
 | D2 Device simulator | ☐ | | | |
 
@@ -1124,6 +1133,7 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 7 | L9 | `GET /generation-summary` and national `GET /installations?reporting-status=…` answered 500 `50001` (bug since L6): the latest-reading `$sort { installation_id: 1, recorded_at: -1 }` did not match the index direction, so MongoDB sorted ~144k readings in memory and hit its 32 MB limit | §8 | Latest-reading and baseline aggregations sort `{ installation_id: -1, recorded_at: -1 }` (reversed index scan, DISTINCT_SCAN) | (L9) |
 | 8 | L10 | Swagger UI "Try it out" on `GET /installations` (own document) prefilled the filter examples (`province-id=1&district-id=1&substation-id=1`), so `colombo.analyst` got 403 `40302` | §10 | Query filter parameters carry no example | (L10) |
 | 9 | L10 | `/solar/v1.0/docs/package.json` answered swagger-ui-express's plain-text 404 instead of the error body | §6.10, §10 | Routed to `not-found.js` → 404 `40403` | (L10) |
+| 10 | L11 | `/token` 405 (`GET`/`PUT`) and 406 (`Accept: text/html`) responses had no `Cache-Control: no-store` / `Pragma: no-cache` (bug since L3): the headers were set only by the POST handler chain, and 406 is answered before the router | §7.2, §6.11 | `security-headers.js` (step 0) sets both on every `/solar/v1.0/token` response; the route-level `noStore` was removed; `02-token` asserts them on 405 and 406 | (L11) |
 
 ---
 
@@ -1138,6 +1148,8 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 5 | L8 | EP17 order is params (400) → unknown region (404). A filter (`district-id` / `substation-id`) cannot lie inside a region that does not exist, so the code answers e.g. `/districts/99/readings?substation-id=1` with 400 `40002`; without filters it is 404 `40401`. Keep that, or check filter containment only after the region is found (→ 404)? | Keep it: params incl. filter inside the region (400) → unknown region (404) → area (403) (§9 EP17, §17 #52) |
 | 6 | L10a | Keep `more_info` in the error body? | No. Optional in WSO2 §11; it always pointed at the same `/docs` page. Removed in L10a (§6.10, §17 #62) |
 | 7 | L10a | Credential for a DECOMMISSIONED installation: 403 or 409? | 403 `40304` (kept). WSO2 §9: 403 = understood but refused to perform. 409 considered and rejected (§9 EP12 unchanged) |
+| 8 | L11 | §6.7 / §6.11 say every 200 GET sends `ETag` and `Last-Modified`. The tooling routes `GET /` and `GET /solar/v1.0/openapi` (§10) send neither. Add them there too, or state in §10 that tooling routes are exempt? | |
+| 9 | L11 | §12 describes `tests/smoke.test.js` and §3.2 has `test:smoke`, but no step lists building the file; D1 "Done when" runs it. Build it in D1 (the README says so), or earlier? | |
 
 ---
 
@@ -1211,3 +1223,6 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 64 | 2026-10-07 | L10a (review) | §13, §14 | New step L10a |
 | 65 | 2026-10-07 | L10a (review) | §16 | Q7 recorded: decommissioned credential issue stays 403 `40304` |
 | 66 | 2026-10-07 | L10a (review) | §13 L10a, §10 | Approved as built: L10a step text names the removed field via §16 Q6; OpenAPI `Error` schema has `additionalProperties: false`; `01-pipeline` checks `error: []` when there are no field problems |
+| 67 | 2026-10-07 | L11 (user) | §13 L11 | README sections in a fixed order: title + student/links table, Architecture (diagram placeholder + request path), Features, Tech stack, Run locally, test accounts / edge cases / curl / tests, Project structure, Deployment placeholder; no secrets; nothing outside this file |
+| 68 | 2026-10-07 | L11 | §13 L11 | README marks `npm run test:smoke` and `npm run simulate` as added in D1 / D2 |
+| 69 | 2026-10-07 | L11 | §6.11 | `no-store` + `no-cache` on every `/token` response, 405 and 406 included, set by `security-headers.js` |

@@ -76,6 +76,8 @@ test('token responses carry Cache-Control: no-store and Pragma: no-cache', async
   for (const res of [
     await api('POST', '/token', { form: { grant_type: 'password', username: adminUsername, password: adminPassword } }),
     await api('POST', '/token', { form: { grant_type: 'password', username: adminUsername, password: 'wrong-password' } }),
+    await api('GET', '/token'),
+    await api('POST', '/token', { headers: { Accept: 'text/html' } }),
   ]) {
     assert.equal(res.headers.get('cache-control'), 'no-store');
     assert.equal(res.headers.get('pragma'), 'no-cache');

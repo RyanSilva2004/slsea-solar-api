@@ -16,12 +16,6 @@ function invalidCredentials(message, grant, subject) {
   return new ApiError(40103, message, { headers: { 'WWW-Authenticate': 'Basic realm="solar"' } });
 }
 
-// §6.11
-export function noStore(req, res, next) {
-  res.set({ 'Cache-Control': 'no-store', Pragma: 'no-cache' });
-  next();
-}
-
 export function formBody(req, res, next) {
   if (!req.is('application/x-www-form-urlencoded')) {
     return next(new ApiError(41501, 'Content-Type must be application/x-www-form-urlencoded.'));
