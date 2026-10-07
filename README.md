@@ -118,7 +118,7 @@ It writes device secrets to `seed/seed-output/`, which is git-ignored.
 | `npm start` | start the API |
 | `npm run dev` | start the API and restart on file changes |
 | `npm test` | full test suite (server must be running) |
-| `npm run test:smoke` | read-only smoke tests, safe against production (`tests/smoke.test.js` is added in step D1) |
+| `npm run test:smoke` | read-only smoke tests, safe against production |
 | `npm run accounts` | create the test accounts |
 | `npm run simulate` | device simulator (`scripts/simulate.js` is added in step D2) |
 
@@ -224,7 +224,7 @@ npm run dev          # terminal 1
 npm test             # terminal 2: full suite
 ```
 
-The read-only smoke suite (`npm run test:smoke`) is added in step D1.
+The read-only smoke suite (`npm run test:smoke`) is safe against production. When `ORIGIN_SECRET` is set, the tests and scripts send it as `X-Origin-Secret`.
 
 Write tests create their own installations with a `meter_id` starting with `TEST-`. They never change the seeded installations.
 
@@ -239,4 +239,36 @@ Write tests create their own installations with a `meter_id` starting with `TEST
 
 ## Deployment
 
-To be added in D1/AWS steps.
+The API runs on an EC2 instance as one process under pm2 (`ecosystem.config.cjs`: app `slsea-api`, `src/server.js` with `--env-file=.env`, 1 instance, restart above 300 MB).
+
+**First install**
+
+```bash
+# Node.js 24 LTS (via nvm)
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+source ~/.bashrc
+nvm install 24
+
+npm install -g pm2
+
+git clone <repository URL> slsea-solar-api
+cd slsea-solar-api
+npm ci --omit=dev
+# create .env with the variables listed under "Run locally":
+#   PUBLIC_BASE_URL is the public https:// URL; ORIGIN_SECRET is set
+pm2 start ecosystem.config.cjs
+pm2 save
+pm2 startup          # run the command it prints, so pm2 starts on boot
+```
+
+**Update**
+
+```bash
+git pull && npm ci --omit=dev && pm2 reload slsea-api
+```
+
+**Production behaviour**
+
+- With `ORIGIN_SECRET` set, every request without the matching `X-Origin-Secret` header gets 403 `40309`.
+- With an `https://` `PUBLIC_BASE_URL`, every response carries `Strict-Transport-Security: max-age=31536000`. Every absolute URL the API returns (`Location`, `Content-Location`, paging links, OpenAPI `servers` and `tokenUrl`) is built from `PUBLIC_BASE_URL`.
+- Check a deployment with `npm run test:smoke`, with `TEST_BASE_URL` set to the public URL.
