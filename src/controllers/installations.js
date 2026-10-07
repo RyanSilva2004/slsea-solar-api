@@ -1,13 +1,16 @@
-// EP6 /installations, EP7 /installations/{installation-id}, EP12 device credential
+// EP6 /installations, EP7 /installations/{installation-id}, EP8 overview, EP12 device credential
 import { latestReadings, reportingStatus } from '../lib/derived.js';
 import { ApiError, fieldError } from '../lib/errors.js';
 import {
   districtInArea,
   districtOfInstallation,
+  districtsById,
   installationInArea,
   provinceInArea,
   provinceOfDistrict,
+  provincesById,
   substationInArea,
+  substationsById,
   substationsOfArea,
 } from '../lib/geography.js';
 import { checkIfMatch, sendCreated, sendUpdated, sendWithCaching } from '../lib/http-cache.js';
@@ -183,6 +186,24 @@ export async function deleteInstallation(req, res) {
   }
   await Installation.deleteOne({ installation_id: installation.installation_id });
   res.json(represent.installation(installation));
+}
+
+// EP8 GET: Last-Modified = response time
+export async function getOverview(req, res) {
+  readQuery(req, []);
+  const installation = await findInstallation(req);
+  const now = new Date();
+  const latest = (await latestReadings([installation.installation_id])).get(installation.installation_id) ?? null;
+  const district = districtsById.get(districtOfInstallation(installation));
+  const body = represent.overview({
+    installation,
+    substation: substationsById.get(installation.substation_id),
+    district,
+    province: provincesById.get(district.province_id),
+    reportingStatus: reportingStatus(installation, latest, now),
+    latest,
+  });
+  sendWithCaching(req, res, body, now);
 }
 
 // §9 EP12: a non-empty request body → 400 40001

@@ -1,4 +1,4 @@
-// EP6 /installations, EP7 /installations/{installation-id}, EP12 device credential
+// EP6 /installations, EP7 /installations/{installation-id}, EP8 overview, EP12 device credential
 import express from 'express';
 import * as installations from '../controllers/installations.js';
 import authenticate from '../middleware/authenticate.js';
@@ -22,6 +22,11 @@ router
   .put(write, jsonBody, installations.replaceInstallation)
   .delete(write, installations.deleteInstallation)
   .all(methodNotAllowed(['GET', 'PUT', 'DELETE']));
+
+router
+  .route('/installations/:id/overview')
+  .get(read, installations.getOverview)
+  .all(methodNotAllowed(['GET']));
 
 router
   .route('/installations/:id/device-credential')

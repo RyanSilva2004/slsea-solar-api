@@ -44,3 +44,15 @@ export function user(doc) {
     district_id: doc.district_id,
   };
 }
+
+// §9 EP8: geography entries carry only id and name
+export function overview({ installation: doc, substation, district, province, reportingStatus, latest }) {
+  return {
+    installation: installation(doc),
+    substation: { substation_id: substation.substation_id, name: substation.name },
+    district: { district_id: district.district_id, name: district.name },
+    province: { province_id: province.province_id, name: province.name },
+    reporting_status: reportingStatus,
+    last_known_reading: latest ? reading(latest) : null,
+  };
+}

@@ -392,7 +392,7 @@ Declare exactly these in the schemas (they already exist from the seed for the f
 | Reading | `{ "reading_id": 159313, "installation_id": "INS-000241", "recorded_at": "2026-10-04T08:15:00.000Z", "power_kw": 3.412, "energy_kwh": 10234.551, "voltage": 236.4 }` |
 | User | `{ "user_id": "7c2d…", "name": "Nimali Perera", "username": "nimali.p", "role": "ANALYST", "jurisdiction_level": "DISTRICT", "district_id": 4 }` |
 
-Overview and summary shapes: §9 EP8, EP5.
+Overview and summary shapes: §9 EP8, EP5. The overview is built by `overview(...)` in `lib/representations.js`.
 
 ### 6.4 Collections and pagination
 
@@ -680,7 +680,7 @@ Every 4xx and 5xx body:
 
 Constants: reporting interval 15 min; silent threshold 30 min; Sri Lanka offset +05:30 (no DST).
 
-- Exports used by EP6: `latestReadings(ids)` → map id → reading; `reportingStatus(installation, latest, now)`.
+- Exports used by EP6 and EP8: `latestReadings(ids)` → map id → reading; `reportingStatus(installation, latest, now)`.
 
 - **Latest reading per installation:** aggregation on `readings`: `$match { installation_id: { $in: ids } }` → `$sort { installation_id: 1, recorded_at: -1 }` → `$group { _id: '$installation_id', doc: { $first: '$$ROOT' } }`. Returns a map id → reading.
 - **Reporting status** (`now` = request time):
@@ -1038,7 +1038,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 
 ### L8 — Overview and region readings
 - EP8, EP17.
-- Tests: `07-views.test.js` (overview of `INS-000004` complete; `INS-000001` → `last_known_reading: null`, `NEVER_REPORTED`; `INS-000003` → `reporting_status: null`; `INS-000002` → `SILENT` (if the seed is older than 30 min every seeded site may be SILENT — assert only on `INS-000001`/`INS-000003` exact values); `/districts/1/readings` count = sum for Colombo; `?substation-id=8` on district 1 → 400 `40002`; `colombo.analyst` on `/districts/4/readings` → 403 `40302`; `/provinces/1/readings` as `colombo.analyst` → 403; as `western.analyst` → 200; paging links).
+- Tests: `07-views.test.js` (overview of `INS-000004` complete; `INS-000001` → `last_known_reading: null`, `NEVER_REPORTED`; `INS-000003` → `reporting_status: null`; `INS-000002` → `SILENT` (if the seed is older than 30 min every seeded site may be SILENT — assert only on `INS-000001`/`INS-000003` exact values; for `INS-000002` and `INS-000004` the status must be `SILENT` when `last_known_reading.recorded_at` is more than 30 min old, else `REPORTING`); `/districts/1/readings` count = sum of the history counts of the Colombo installations, both with `to` = 2 hours before the test run (other test files post readings concurrently); `?substation-id=8` on district 1 → 400 `40002`; `colombo.analyst` on `/districts/4/readings` → 403 `40302`; `/provinces/1/readings` as `colombo.analyst` → 403; as `western.analyst` → 200; paging links).
 - **Done when:** tests pass.
 
 ### L9 — Generation summaries
@@ -1080,8 +1080,8 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 | L4 Geography | ☑ | 2026-10-07 | 51e45ec | `routes/geography.js` + `controllers/geography.js`: EP2–EP4 lists (filters `province-id`, `district-id`, paging, links) and members from the geography cache; `authenticate` → `requireScope('geography:read')`; conditional GET with collection-latest / member `updated_at`; `03-geography.test.js` 17/17; `npm test` 50 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process |
 | L5 Users + passwords | ☑ | 2026-10-07 | a1e9c5e | `routes/users.js` + `controllers/users.js`: EP13 list (filters `district-id`, `role`, `jurisdiction-level`, sorted by `username`) and create; EP14 GET/PUT/DELETE with `If-Match` and own-account 40305; EP15 own change (current password checked) and admin reset, both revoke older tokens; `lib/validation.js` user/password body rules (every field problem listed); `scripts/create-test-accounts.js` created all 7 accounts, second run skipped all 7; `04-users.test.js` 19/19 (incl. rate-limit reset test moved from `02b`); `npm test` 68 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on four runs in a row on one server process |
 | L6 Installations + credentials | ☑ | 2026-10-07 | 14150bd | `routes/installations.js` + `controllers/installations.js`: EP6 list (area installations loaded once, filters `province-id`, `district-id`, `substation-id`, `status`, `reporting-status` and paging in memory; region filter outside the area 403 `40302`) and create; EP7 GET/PUT/DELETE with `If-Match`, decommissioning clears the credential, DELETE refused when readings exist; EP12 credential issue (`no-store`, replaces the old secret, 403 `40304` when decommissioned); `lib/validation.js` installation body rules; `lib/derived.js` latest reading + reporting status; area helpers in `lib/geography.js`; `05-installations.test.js` 24/24 (review gate: EP12 rejects a request body); `npm test` 92 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process; no `TEST-` installation left afterwards, seeded installations unchanged |
-| L7 Readings | ☑ | 2026-10-07 | | `routes/readings.js` + `controllers/readings.js`: EP10 GET (`from`/`to` window, `sort`, paging, Last-Modified = latest `received_at` or `created_at`) and POST (steps 1–9 in order; duplicate key on (installation, `recorded_at`) re-runs step 6); EP11 member (reading of another installation 404); EP9 last-known with `Content-Location`; `readingsLimiter` (120 / min per device installation, after `requireScope`, before `json-body`); `wrong_installation` audit line; `lib/validation.js` reading body rules; `06-readings.test.js` 21/21; `npm test` 113 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process, no 429 outside the limiter test (review gate: malformed path id at step 3 → 404, query parameters on POST → 400 `40002`, history count ≥ 672); test installations with readings are left `DECOMMISSIONED` (§12) |
-| L8 Overview + region readings | ☐ | | | |
+| L7 Readings | ☑ | 2026-10-07 | 9cb62ab | `routes/readings.js` + `controllers/readings.js`: EP10 GET (`from`/`to` window, `sort`, paging, Last-Modified = latest `received_at` or `created_at`) and POST (steps 1–9 in order; duplicate key on (installation, `recorded_at`) re-runs step 6); EP11 member (reading of another installation 404); EP9 last-known with `Content-Location`; `readingsLimiter` (120 / min per device installation, after `requireScope`, before `json-body`); `wrong_installation` audit line; `lib/validation.js` reading body rules; `06-readings.test.js` 21/21; `npm test` 113 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process, no 429 outside the limiter test (review gate: malformed path id at step 3 → 404, query parameters on POST → 400 `40002`, history count ≥ 672); test installations with readings are left `DECOMMISSIONED` (§12) |
+| L8 Overview + region readings | ☑ | 2026-10-07 | | EP8 overview in `routes/installations.js` + `controllers/installations.js` (`latestReadings` + `reportingStatus`, geography from the cache, `representations.overview`, Last-Modified = response time); EP17 `routes/region-readings.js` + `controllers/region-readings.js`: `/districts/{id}/readings` and `/provinces/{id}/readings`, filters checked against the path region and the given `district-id` (400 `40002`) → unknown region 404 → area 403 `40302`; region installations of any status → readings sorted by `recorded_at` then `installation_id`, `countDocuments`; `07-views.test.js` 13/13; `npm test` 126 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process, 429 only on `probe-` / dedicated `TEST-` keys |
 | L9 Generation summaries | ☐ | | | |
 | L10 OpenAPI + Swagger | ☐ | | | |
 | L11 Full acceptance + README | ☐ | | | |
@@ -1101,6 +1101,7 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 3 | L3 | Spec paths named `seed-output/` at the repo root; the seed output is in `seed/seed-output/`, so the `INS-000004` device test would always be skipped | §0, §3, §3.3, §4, §5.3, §13 L3 | Paths changed to `seed/seed-output/` (user's decision); `.env.example` and `.gitignore` updated | 6fd605f |
 | 4 | L3a | Reversal of row 2: start-up accepted a `BOOTSTRAP_ADMIN_PASSWORD` of any length; §4/§7.9 now require 10–72 characters whenever set | §4, §7.9 | `config.js` checks the length and exits with code 1 and a clear message | (L3a) |
 | 5 | L3a | `/token` returned 401 for an unknown username without running bcrypt, so it answered faster than a wrong password | §7.2 | `checkPassword` compares against `DUMMY_HASH` when the user is missing | (L3a) |
+| 6 | L8 | `07-views.test.js` (own test) requested an offset beyond the count of the `substation-id=1` query without that filter, so the page was not empty | §6.4 | The request keeps the same filter | (L8) |
 
 ---
 
@@ -1112,6 +1113,7 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 2 | L6 | EP12 says "No body". A body sent with the request is currently ignored (not parsed, no error). Keep that, or answer a non-empty body with 400 `40001`? | Non-empty body → 400 `40001`; no body is accepted (§9 EP12, §17 #42) |
 | 3 | L7 | EP10 POST step 3 compares the path installation with the token's. §6.1 says a path id that does not match `^INS-[0-9]{6}$` → 404 `40401`. The code answers such an id with 404 `40401` at step 3 (no audit line); a well-formed id of another installation gets 403 `40306` + `wrong_installation`. Keep that, or answer every mismatch with 403 `40306`? | Keep it: malformed id → 404 `40401` without audit line; well-formed other id → 403 `40306` + audit (§9 EP10 step 3, §17 #46) |
 | 4 | L7 | L7 asks for history `count` 672 for `INS-000004` (exact). The D2 simulator posts readings for `INS-000004`, after which the count is above 672. Keep the exact check (and re-seed after simulating), or assert `≥ 672`? | Assert `≥ 672` (§13 L7, §17 #48) |
+| 5 | L8 | EP17 order is params (400) → unknown region (404). A filter (`district-id` / `substation-id`) cannot lie inside a region that does not exist, so the code answers e.g. `/districts/99/readings?substation-id=1` with 400 `40002`; without filters it is 404 `40401`. Keep that, or check filter containment only after the region is found (→ 404)? | |
 
 ---
 
@@ -1167,3 +1169,6 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 46 | 2026-10-07 | L7 (review) | §9 EP10 | POST step 3: malformed path id → 404 `40401` without audit line; well-formed id of another installation → 403 `40306` + `wrong_installation` (§16 Q3) |
 | 47 | 2026-10-07 | L7 (review) | §9 EP10 | POST: any query parameter → 400 `40002`, checked before step 1 |
 | 48 | 2026-10-07 | L7 (review) | §13 L7 | `INS-000004` history `count` ≥ 672 (exactly 672 on a fresh seed) (§16 Q4) |
+| 49 | 2026-10-07 | L8 | §6.3 | The overview is built by `overview(...)` in `lib/representations.js` |
+| 50 | 2026-10-07 | L8 | §8 | `latestReadings` and `reportingStatus` are also used by EP8 |
+| 51 | 2026-10-07 | L8 | §13 L8 | `INS-000002`/`INS-000004` status asserted from the age of `last_known_reading`; Colombo region count compared with the per-installation sum, both with `to` = 2 hours before the run |
