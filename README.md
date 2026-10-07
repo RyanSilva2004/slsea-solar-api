@@ -239,7 +239,7 @@ Write tests create their own installations with a `meter_id` starting with `TEST
 
 ## Deployment
 
-The API runs on an EC2 instance as one process under pm2 (`ecosystem.config.cjs`: app `slsea-api`, `src/server.js` with `--env-file=.env`, 1 instance, restart above 300 MB).
+The API runs on an EC2 instance as one process under pm2 (`ecosystem.config.cjs`: app `slsea-api`, `src/server.js` with the `.env` next to `ecosystem.config.cjs`, whatever folder pm2 is started from, 1 instance, restart above 300 MB).
 
 **First install**
 

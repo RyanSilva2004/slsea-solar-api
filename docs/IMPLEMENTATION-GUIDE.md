@@ -429,7 +429,7 @@ Overview and summary shapes: §9 EP8, EP5. The overview is built by `overview(..
 
 ### 6.7 Conditional GET
 
-Every successful GET (200) sends `ETag` and `Last-Modified`.
+Every successful GET (200) of an API resource sends `ETag` and `Last-Modified`. Tooling routes (§10) are exempt.
 
 - **ETag:** strong, `"` + base64url(SHA-256(`JSON.stringify(source)`)) + `"`.
   - `source` = the response body. For summaries (EP5) the body **without** `computed_at`.
@@ -525,7 +525,7 @@ Every 4xx and 5xx body:
 | Header | When |
 |---|---|
 | `Content-Type: application/json; charset=utf-8` | every response with a body |
-| `ETag`, `Last-Modified` | every 200 GET, 304, 201, 200 PUT |
+| `ETag`, `Last-Modified` | every 200 GET, 304, 201, 200 PUT (tooling routes exempt, §10) |
 | `Location`, `Content-Location` | every 201 |
 | `Content-Location` | last-known reading (EP9); identical reading resend (EP10) |
 | `Allow` | every 405 |
@@ -919,6 +919,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 | `GET /solar/v1.0/docs/` and its assets | Swagger UI (`swagger-ui-express`, `validatorUrl: null`) loading `/solar/v1.0/openapi` |
 
 - Each tooling path answers other methods with 405 `40501` (`Allow: GET`). `/solar/v1.0/docs/package.json` → 404 `40403`.
+- Tooling routes (`GET /`, `/solar/v1.0/openapi`, `/solar/v1.0/docs` and `/solar/v1.0/docs/`) are not API resources: they send no `ETag` or `Last-Modified` (§6.7 and §6.11 do not apply).
 
 **OpenAPI document** (`src/openapi/document.js`, OpenAPI 3.0.3):
 - `servers: [{ url: PUBLIC_BASE_URL }]`.
@@ -1084,7 +1085,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 - **Done when:** `npm test` passes completely twice in a row (the second run proves tests do not depend on a clean database); README steps work from a fresh clone.
 
 ### D1 — Production readiness
-- `ecosystem.config.cjs`: app name `slsea-api`, script `src/server.js`, `node_args: '--env-file=.env'`, `instances: 1`, `autorestart: true`, `max_memory_restart: '300M'`.
+- `ecosystem.config.cjs`: app name `slsea-api`, script `src/server.js`, `cwd: __dirname`, `node_args: ['--env-file=' + path.join(__dirname, '.env')]` (an array: the absolute path may contain spaces), `instances: 1`, `autorestart: true`, `max_memory_restart: '300M'`.
 - Confirm the origin guard (§7.10) and `PUBLIC_BASE_URL` are used everywhere (Location, links, OpenAPI `servers` and `tokenUrl`).
 - `tests/smoke.test.js` (§12) is built in this step; the README no longer marks it as added in D1.
 - Locally, pm2 runs through `npx pm2`; it is never added to `package.json`.
@@ -1115,7 +1116,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 | L10 OpenAPI + Swagger | ☑ | 2026-10-07 | b24bee7 | `src/openapi/document.js`: OpenAPI 3.0.3, 22 paths / 29 operations (matches the routers one to one), schemas for every representation, collection envelope, summary, overview, token, credential, password and `Error`; per-operation error responses list their codes from the `lib/errors.js` catalogue; `oauth2` password + clientCredentials flows; `info.description` with Swagger token steps, rate limits and the error table (generated from the catalogue); `/openapi`, `/docs` (301 → `docs/`), `/docs/` Swagger UI in `routes/tooling.js` + `controllers/tooling.js`; validated with `@apidevtools/swagger-parser` (scratchpad, not a dependency); headless Firefox: UI loads with `nosniff` and no error panel, password flow as `colombo.analyst` + "Try it out" `GET /installations` → 200, clientCredentials with `INS-000004` → token 200 and `GET /provinces` → 403 `40301`; `01-pipeline.test.js` +3 tests; `npm test` 137 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on the 4th and 5th of five runs in a row on one server process (summaries of runs 1–3 not captured), 429 only on `probe-` / dedicated `TEST-` keys (review gate: `/docs` redirect, 405 placement, filter examples) |
 | L10a Four-field error body | ☑ | 2026-10-07 | 4ac4591 | §6.10 error body is exactly `code`, `message`, `description`, `error` (always an array); `lib/errors.js` `errorBody` and the `config` import trimmed; OpenAPI `Error` schema has the four fields (`additionalProperties: false`) and `info.description` text updated; error-body assertions in `01-pipeline`, `02b-hardening`, `06-readings` expect four fields, `01-pipeline` also checks `error: []` without field problems; §16 Q6/Q7 answered; status codes, error codes and headers unchanged; OpenAPI document validates (swagger-parser); `npm test` 137 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process (review gate approved: step text names the field via §16 Q6, `additionalProperties: false` on `Error`, extra `error: []` check) |
 | L11 Full acceptance + README | ☑ | 2026-10-07 | f548d0e | Endpoint review against §9 (code read + live probes of 405/406/415/304/If-Match/filters/paging per family): one gap fixed (§15 #10); `02-token` no-store test also covers 405 and 406; README rewritten in the §13 L11 section order, no secrets; fresh clone (scratchpad): `npm install`, `.env`, `npm run dev`, `npm run accounts` (all 7 skipped), health, `/docs` 301, `/docs/` 200, `/openapi` 200; `npm test` 137 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on two runs in a row on one server process after the fix (one run before it, same result), 429 only on `probe-` / dedicated `TEST-` keys |
-| D1 Production readiness | ☑ | 2026-10-07 | (D1) | `ecosystem.config.cjs` (`slsea-api`, `src/server.js`, `--env-file=.env`, 1 instance, autorestart, 300M); `tests/smoke.test.js` built (§16 Q9); README "Deployment" (Node 24, `npm ci --omit=dev`, pm2 start/save/startup, update command); `PUBLIC_BASE_URL` confirmed as the only source of absolute URLs (`Location`/`Content-Location` in `lib/http-cache.js` and `controllers/readings.js`, paging links, OpenAPI `servers` + both `tokenUrl`s), origin guard is pipeline step 1 for every request; under `npx pm2` (7.0.4) with `ORIGIN_SECRET` set: requests without or with a wrong header → 403 `40309` (health, API, `/openapi`, `/token`), `npm run test:smoke` 10/10 with the header, `01-pipeline` origin guard test passes; with `PUBLIC_BASE_URL=https://example.test/solar/v1.0` `Strict-Transport-Security` on every sampled response (200, 301, 400, 401, 403, 404, 405, 406) and the returned URLs use the https base; pm2 killed, nothing on `PORT` |
+| D1 Production readiness | ☑ | 2026-10-07 | 72cc469 | `ecosystem.config.cjs` (`slsea-api`, `src/server.js`, `--env-file=.env`, 1 instance, autorestart, 300M); `tests/smoke.test.js` built (§16 Q9); README "Deployment" (Node 24, `npm ci --omit=dev`, pm2 start/save/startup, update command); `PUBLIC_BASE_URL` confirmed as the only source of absolute URLs (`Location`/`Content-Location` in `lib/http-cache.js` and `controllers/readings.js`, paging links, OpenAPI `servers` + both `tokenUrl`s), origin guard is pipeline step 1 for every request; under `npx pm2` (7.0.4) with `ORIGIN_SECRET` set: requests without or with a wrong header → 403 `40309` (health, API, `/openapi`, `/token`), `npm run test:smoke` 10/10 with the header, `01-pipeline` origin guard test passes; with `PUBLIC_BASE_URL=https://example.test/solar/v1.0` `Strict-Transport-Security` on every sampled response (200, 301, 400, 401, 403, 404, 405, 406) and the returned URLs use the https base; pm2 killed, nothing on `PORT`. Approved with: §16 Q8 tooling routes exempt from `ETag`/`Last-Modified`; `cwd: __dirname` + absolute `--env-file` path (§15 #11); pm2 started from another folder → `npm test` 147 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty; the run includes `smoke.test.js`), 429 only on `probe-` / dedicated `TEST-` keys |
 | D2 Device simulator | ☐ | | | |
 
 Status values: ☐ not started · ◐ in progress · ☑ done.
@@ -1136,6 +1137,7 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 8 | L10 | Swagger UI "Try it out" on `GET /installations` (own document) prefilled the filter examples (`province-id=1&district-id=1&substation-id=1`), so `colombo.analyst` got 403 `40302` | §10 | Query filter parameters carry no example | (L10) |
 | 9 | L10 | `/solar/v1.0/docs/package.json` answered swagger-ui-express's plain-text 404 instead of the error body | §6.10, §10 | Routed to `not-found.js` → 404 `40403` | (L10) |
 | 10 | L11 | `/token` 405 (`GET`/`PUT`) and 406 (`Accept: text/html`) responses had no `Cache-Control: no-store` / `Pragma: no-cache` (bug since L3): the headers were set only by the POST handler chain, and 406 is answered before the router | §7.2, §6.11 | `security-headers.js` (step 0) sets both on every `/solar/v1.0/token` response; the route-level `noStore` was removed; `02-token` asserts them on 405 and 406 | f548d0e |
+| 11 | D1 | pm2 (own config) started outside the repo folder crash-looped with `.env: not found`: in cluster mode Node resolves the relative `--env-file=.env` against the pm2 daemon's folder, so `cwd` alone does not help (also affects `pm2 startup` at boot) | §13 D1 | `node_args` passes the absolute `.env` path as an array (user's choice); started from another folder → 0 restarts | (D1 approved) |
 
 ---
 
@@ -1150,7 +1152,7 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 5 | L8 | EP17 order is params (400) → unknown region (404). A filter (`district-id` / `substation-id`) cannot lie inside a region that does not exist, so the code answers e.g. `/districts/99/readings?substation-id=1` with 400 `40002`; without filters it is 404 `40401`. Keep that, or check filter containment only after the region is found (→ 404)? | Keep it: params incl. filter inside the region (400) → unknown region (404) → area (403) (§9 EP17, §17 #52) |
 | 6 | L10a | Keep `more_info` in the error body? | No. Optional in WSO2 §11; it always pointed at the same `/docs` page. Removed in L10a (§6.10, §17 #62) |
 | 7 | L10a | Credential for a DECOMMISSIONED installation: 403 or 409? | 403 `40304` (kept). WSO2 §9: 403 = understood but refused to perform. 409 considered and rejected (§9 EP12 unchanged) |
-| 8 | L11 | §6.7 / §6.11 say every 200 GET sends `ETag` and `Last-Modified`. The tooling routes `GET /` and `GET /solar/v1.0/openapi` (§10) send neither. Add them there too, or state in §10 that tooling routes are exempt? | |
+| 8 | L11 | §6.7 / §6.11 say every 200 GET sends `ETag` and `Last-Modified`. The tooling routes `GET /` and `GET /solar/v1.0/openapi` (§10) send neither. Add them there too, or state in §10 that tooling routes are exempt? || Exempt: tooling routes are not API resources; no code change (§6.7, §6.11, §10, §17 #72) |
 | 9 | L11 | §12 describes `tests/smoke.test.js` and §3.2 has `test:smoke`, but no step lists building the file; D1 "Done when" runs it. Build it in D1 (the README says so), or earlier? | Build it in D1 (§13 D1, §17 #70) |
 
 ---
@@ -1230,3 +1232,5 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 69 | 2026-10-07 | L11 | §6.11 | `no-store` + `no-cache` on every `/token` response, 405 and 406 included, set by `security-headers.js` |
 | 70 | 2026-10-07 | D1 | §13 D1 | `tests/smoke.test.js` is built in D1; the README D1 marker is removed (§16 Q9) |
 | 71 | 2026-10-07 | D1 | §13 D1 | Locally pm2 runs through `npx pm2`, never a `package.json` entry |
+| 72 | 2026-10-07 | D1 (review) | §6.7, §6.11, §10 | Tooling routes (`GET /`, `/openapi`, `/docs`, `/docs/`) send no `ETag`/`Last-Modified` (§16 Q8) |
+| 73 | 2026-10-07 | D1 (review) | §13 D1 | `ecosystem.config.cjs` sets `cwd: __dirname` and `node_args: ['--env-file=' + path.join(__dirname, '.env')]` |
