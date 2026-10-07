@@ -1,6 +1,4 @@
 // §6.10 Error body and catalogue
-import config from '../config.js';
-
 export const catalogue = {
   40001: { status: 400, description: 'Invalid request body' },
   40002: { status: 400, description: 'Invalid query parameter' },
@@ -57,7 +55,6 @@ export function errorBody(code, message, errors = []) {
     code,
     message,
     description: catalogue[code].description,
-    more_info: `${config.publicBaseUrl}/docs`,
     error: errors,
   };
 }

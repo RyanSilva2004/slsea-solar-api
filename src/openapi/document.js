@@ -63,7 +63,7 @@ A request over the limit gets 429 \`42901\` with \`Retry-After\` (seconds).
 
 ## Error codes
 
-Every error body has \`code\`, \`message\`, \`description\`, \`more_info\` and \`error\` (one entry per field problem).
+Every error body has exactly \`code\`, \`message\`, \`description\` and \`error\` (an array with one entry per field problem; empty when there is none).
 
 | HTTP | Code | Description |
 |---|---|---|
@@ -270,12 +270,12 @@ const schemas = {
     code: { type: 'integer', example: 40001 },
     message: { type: 'string', example: 'capacity_kw must be greater than 0 and at most 1000.' },
     description: { type: 'string', example: 'Invalid request body' },
-    more_info: { type: 'string', format: 'uri', example: `${config.publicBaseUrl}/docs` },
     error: {
       type: 'array',
+      description: 'One entry per field problem; empty when there is none.',
       items: object({ code: { type: 'integer' }, message: { type: 'string' } }),
     },
-  }),
+  }, undefined, { additionalProperties: false }),
 };
 
 const stringHeader = (text) => ({ description: text, schema: { type: 'string' } });

@@ -307,7 +307,7 @@ test('readingsLimiter: 120 x 400 40001, the 121st -> 429 42901; another installa
   const blocked = await postReading(limited.installation_id, token, {});
   assertError(blocked, 429, 42901);
   assert.ok(Number(blocked.headers.get('retry-after')) >= 1);
-  assert.deepEqual(Object.keys(blocked.body).sort(), ['code', 'description', 'error', 'message', 'more_info']);
+  assert.deepEqual(Object.keys(blocked.body).sort(), ['code', 'description', 'error', 'message']);
 
   const other = await postReading(site.installation_id, currentToken, reading(2, 126));
   assert.equal(other.status, 201, other.text);

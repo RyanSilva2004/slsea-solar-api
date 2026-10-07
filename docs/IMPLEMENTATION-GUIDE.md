@@ -479,13 +479,12 @@ Every 4xx and 5xx body:
   "code": 40001,
   "message": "capacity_kw must be greater than 0 and at most 1000.",
   "description": "Invalid request body",
-  "more_info": "<PUBLIC_BASE_URL>/docs",
   "error": [ { "code": 40001, "message": "capacity_kw must be greater than 0 and at most 1000." } ]
 }
 ```
 
-- `code`: from the table below. `description`: the fixed short title from the table. `message`: detailed text for this case. `more_info`: always `PUBLIC_BASE_URL + "/docs"`. `error`: one entry per field problem; `[]` when there is none.
-- All five fields are always present.
+- `code`: from the table below. `description`: the fixed short title from the table. `message`: detailed text for this case. `error`: an array with one entry per field problem; `[]` when there is none.
+- Exactly these four fields, always present.
 - Thrown as `new ApiError(code, message, { errors, headers })` (`lib/errors.js`); `headers` carries `Allow` / `WWW-Authenticate` / `Retry-After`.
 
 | HTTP | Code | Description (fixed) | Used when |
@@ -1002,7 +1001,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 
 ### L2 — HTTP foundation
 - Pipeline order (§6.2): origin guard, tooling bypass, negotiation, 404, 405 helper, error handler, `ApiError` + catalogue (§6.10), `json-body.js`, `lib/http-cache.js` (§6.7, §6.8), `lib/pagination.js` (§6.4), `lib/query.js` (§6.5), `lib/time.js` (§6.6), `lib/representations.js` (§6.3).
-- Tests: `01-pipeline.test.js` (406 with `Accept: text/html` on an API path, 404 `40403`, trailing slash 404, upper-case path 404, health OK with `Accept: text/html`, error body has all five fields, origin guard when `ORIGIN_SECRET` is set).
+- Tests: `01-pipeline.test.js` (406 with `Accept: text/html` on an API path, 404 `40403`, trailing slash 404, upper-case path 404, health OK with `Accept: text/html`, error body has exactly the four fields, origin guard when `ORIGIN_SECRET` is set).
 - **Done when:** tests pass.
 
 ### L3 — Token and authentication
@@ -1019,7 +1018,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 - §6.2: review existing code for the rule "request values reach filters only after validation"; fix and log any place that breaks it.
 - Tests: `02b-hardening.test.js`:
   - unknown username and wrong password for `hq.admin` each take at least 30 ms;
-  - 11 failed logins for `probe-<random>` → the 11th is 429 `42901` with `Retry-After`, `Cache-Control: no-store` and the five-field error body;
+  - 11 failed logins for `probe-<random>` → the 11th is 429 `42901` with `Retry-After`, `Cache-Control: no-store` and the four-field error body;
   - a second unknown username `probe-<random>` still gets 401 (keys are separate);
   - 15 requests with a missing `grant_type` → all 400, none 429;
   - 12 successful `hq.admin` logins in a row → all 200;
@@ -1063,6 +1062,12 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 - Tests in `01-pipeline.test.js`: `/openapi` → 200, `openapi: 3.0.3`, `servers` and both `tokenUrl`s from `PUBLIC_BASE_URL`; 429 + `Retry-After` on `/token` and readings POST; `If-Match` on the four PUT/DELETE operations; `/docs` → 301 `docs/`; `/docs/` → Swagger UI HTML with `nosniff`; `swagger-ui-init.js` loads `/solar/v1.0/openapi`.
 - **Done when:** `/solar/v1.0/docs` loads in a browser with the security headers in place; Authorize with the password flow (`colombo.analyst`) works and "Try it out" succeeds on `/installations`; client-credentials flow works with a device credential; every endpoint and status in §9 is listed, including 429 on `/token` and readings POST; the document is valid OpenAPI 3.0.3 (no errors shown by Swagger UI).
 
+### L10a — Four-field error body
+- §6.10: the error body has exactly `code`, `message`, `description`, `error`; `error` is always an array (`[]` when there are no field problems). The documentation-link field (§16 Q6) is removed from `lib/errors.js`, the OpenAPI `Error` schema, the `info.description` error-codes text and the tests.
+- Status codes, error codes and headers are unchanged; `/docs` stays.
+- Tests: the error-body assertions in `01-pipeline.test.js`, `02b-hardening.test.js` and `06-readings.test.js` expect exactly the four fields.
+- **Done when:** the field named in §16 Q6 appears nowhere in `src/`, `tests/` or this file outside §16 and §17; the OpenAPI document validates; `npm test` passes.
+
 ### L11 — Full acceptance and README
 - Run the full suite against Atlas with the app running on the laptop.
 - Review every endpoint against §9 one more time; fix and log gaps in §15.
@@ -1071,7 +1076,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 
 ### D1 — Production readiness
 - `ecosystem.config.cjs`: app name `slsea-api`, script `src/server.js`, `node_args: '--env-file=.env'`, `instances: 1`, `autorestart: true`, `max_memory_restart: '300M'`.
-- Confirm the origin guard (§7.10) and `PUBLIC_BASE_URL` are used everywhere (Location, links, `more_info`, OpenAPI `servers` and `tokenUrl`).
+- Confirm the origin guard (§7.10) and `PUBLIC_BASE_URL` are used everywhere (Location, links, OpenAPI `servers` and `tokenUrl`).
 - README: "Deployment" section (EC2 commands: install Node 24, `npm ci --omit=dev`, `pm2 start ecosystem.config.cjs`, `pm2 save`, `pm2 startup`; update: `git pull && npm ci --omit=dev && pm2 reload slsea-api`).
 - **Done when:** app runs under pm2 locally with `ORIGIN_SECRET` set; requests without the header get 403 `40309`; with `PUBLIC_BASE_URL=https://example.test/solar/v1.0` every response carries `Strict-Transport-Security`; `npm run test:smoke` passes with the header supplied (helpers send `X-Origin-Secret` when `ORIGIN_SECRET` is set).
 
@@ -1096,7 +1101,8 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 | L7 Readings | ☑ | 2026-10-07 | 9cb62ab | `routes/readings.js` + `controllers/readings.js`: EP10 GET (`from`/`to` window, `sort`, paging, Last-Modified = latest `received_at` or `created_at`) and POST (steps 1–9 in order; duplicate key on (installation, `recorded_at`) re-runs step 6); EP11 member (reading of another installation 404); EP9 last-known with `Content-Location`; `readingsLimiter` (120 / min per device installation, after `requireScope`, before `json-body`); `wrong_installation` audit line; `lib/validation.js` reading body rules; `06-readings.test.js` 21/21; `npm test` 113 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process, no 429 outside the limiter test (review gate: malformed path id at step 3 → 404, query parameters on POST → 400 `40002`, history count ≥ 672); test installations with readings are left `DECOMMISSIONED` (§12) |
 | L8 Overview + region readings | ☑ | 2026-10-07 | cdb2948 | EP8 overview in `routes/installations.js` + `controllers/installations.js` (`latestReadings` + `reportingStatus`, geography from the cache, `representations.overview`, Last-Modified = response time); EP17 `routes/region-readings.js` + `controllers/region-readings.js`: `/districts/{id}/readings` and `/provinces/{id}/readings`, filters checked against the path region and the given `district-id` (400 `40002`) → unknown region 404 → area 403 `40302`; region installations of any status → readings sorted by `recorded_at` then `installation_id`, `countDocuments`; `07-views.test.js` 13/13; `npm test` 126 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process, 429 only on `probe-` / dedicated `TEST-` keys (review gate: EP17 filter-in-region 400 before unknown region 404) |
 | L9 Generation summaries | ☑ | 2026-10-07 | 5876a07 | `routes/summaries.js` + `controllers/summaries.js`: EP5 district, province and national summaries (query parameters 400 `40002` → unknown region 404 → area 403 `40302`; national only for `NATIONAL` callers); `lib/derived.js` `energyToday` (two aggregations: today first/last, baseline before the day) and `summary`; `representations.generationSummary`; ETag without `computed_at`; latest-reading and baseline sorts `{ installation_id: -1, recorded_at: -1 }` (DISTINCT_SCAN, 250 keys instead of 143,832; national summary ≈ 0.5 s); district 1 `energy_today_kwh` cross-checked with per-installation queries; `08-summaries.test.js` 8/8; `npm test` 134 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process, 429 only on `probe-` / dedicated `TEST-` keys (review gate: reversed sort, EP5 query parameters 400 first, 304 test on district 4) |
-| L10 OpenAPI + Swagger | ☑ | 2026-10-07 | | `src/openapi/document.js`: OpenAPI 3.0.3, 22 paths / 29 operations (matches the routers one to one), schemas for every representation, collection envelope, summary, overview, token, credential, password and `Error`; per-operation error responses list their codes from the `lib/errors.js` catalogue; `oauth2` password + clientCredentials flows; `info.description` with Swagger token steps, rate limits and the error table (generated from the catalogue); `/openapi`, `/docs` (301 → `docs/`), `/docs/` Swagger UI in `routes/tooling.js` + `controllers/tooling.js`; validated with `@apidevtools/swagger-parser` (scratchpad, not a dependency); headless Firefox: UI loads with `nosniff` and no error panel, password flow as `colombo.analyst` + "Try it out" `GET /installations` → 200, clientCredentials with `INS-000004` → token 200 and `GET /provinces` → 403 `40301`; `01-pipeline.test.js` +3 tests; `npm test` 137 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on the 4th and 5th of five runs in a row on one server process (summaries of runs 1–3 not captured), 429 only on `probe-` / dedicated `TEST-` keys (review gate: `/docs` redirect, 405 placement, filter examples) |
+| L10 OpenAPI + Swagger | ☑ | 2026-10-07 | b24bee7 | `src/openapi/document.js`: OpenAPI 3.0.3, 22 paths / 29 operations (matches the routers one to one), schemas for every representation, collection envelope, summary, overview, token, credential, password and `Error`; per-operation error responses list their codes from the `lib/errors.js` catalogue; `oauth2` password + clientCredentials flows; `info.description` with Swagger token steps, rate limits and the error table (generated from the catalogue); `/openapi`, `/docs` (301 → `docs/`), `/docs/` Swagger UI in `routes/tooling.js` + `controllers/tooling.js`; validated with `@apidevtools/swagger-parser` (scratchpad, not a dependency); headless Firefox: UI loads with `nosniff` and no error panel, password flow as `colombo.analyst` + "Try it out" `GET /installations` → 200, clientCredentials with `INS-000004` → token 200 and `GET /provinces` → 403 `40301`; `01-pipeline.test.js` +3 tests; `npm test` 137 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on the 4th and 5th of five runs in a row on one server process (summaries of runs 1–3 not captured), 429 only on `probe-` / dedicated `TEST-` keys (review gate: `/docs` redirect, 405 placement, filter examples) |
+| L10a Four-field error body | ☑ | 2026-10-07 | | §6.10 error body is exactly `code`, `message`, `description`, `error` (always an array); `lib/errors.js` `errorBody` and the `config` import trimmed; OpenAPI `Error` schema has the four fields (`additionalProperties: false`) and `info.description` text updated; error-body assertions in `01-pipeline`, `02b-hardening`, `06-readings` expect four fields, `01-pipeline` also checks `error: []` without field problems; §16 Q6/Q7 answered; status codes, error codes and headers unchanged; OpenAPI document validates (swagger-parser); `npm test` 137 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process |
 | L11 Full acceptance + README | ☐ | | | |
 | D1 Production readiness | ☐ | | | |
 | D2 Device simulator | ☐ | | | |
@@ -1130,6 +1136,8 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 3 | L7 | EP10 POST step 3 compares the path installation with the token's. §6.1 says a path id that does not match `^INS-[0-9]{6}$` → 404 `40401`. The code answers such an id with 404 `40401` at step 3 (no audit line); a well-formed id of another installation gets 403 `40306` + `wrong_installation`. Keep that, or answer every mismatch with 403 `40306`? | Keep it: malformed id → 404 `40401` without audit line; well-formed other id → 403 `40306` + audit (§9 EP10 step 3, §17 #46) |
 | 4 | L7 | L7 asks for history `count` 672 for `INS-000004` (exact). The D2 simulator posts readings for `INS-000004`, after which the count is above 672. Keep the exact check (and re-seed after simulating), or assert `≥ 672`? | Assert `≥ 672` (§13 L7, §17 #48) |
 | 5 | L8 | EP17 order is params (400) → unknown region (404). A filter (`district-id` / `substation-id`) cannot lie inside a region that does not exist, so the code answers e.g. `/districts/99/readings?substation-id=1` with 400 `40002`; without filters it is 404 `40401`. Keep that, or check filter containment only after the region is found (→ 404)? | Keep it: params incl. filter inside the region (400) → unknown region (404) → area (403) (§9 EP17, §17 #52) |
+| 6 | L10a | Keep `more_info` in the error body? | No. Optional in WSO2 §11; it always pointed at the same `/docs` page. Removed in L10a (§6.10, §17 #62) |
+| 7 | L10a | Credential for a DECOMMISSIONED installation: 403 or 409? | 403 `40304` (kept). WSO2 §9: 403 = understood but refused to perform. 409 considered and rejected (§9 EP12 unchanged) |
 
 ---
 
@@ -1198,3 +1206,7 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 59 | 2026-10-07 | L10 | §10 | Error responses list their codes; bearer operations list 400 `40002`, 401, 403 `40301`/`40309`, 406, 500; GETs list 304 and `If-None-Match` / `If-Modified-Since`; 405 in operation descriptions + `components.responses.MethodNotAllowed`; `40403` in the info error table |
 | 60 | 2026-10-07 | L10 | §10 | Query filter parameters have no example value; password flow lists the user scopes, clientCredentials `readings:write` |
 | 61 | 2026-10-07 | L10 | §13 L10 | `01-pipeline.test.js` covers `/openapi`, `/docs`, `/docs/` and `swagger-ui-init.js` |
+| 62 | 2026-10-07 | L10a (review) | §6.10 | Error body has exactly `code`, `message`, `description`, `error` (always an array); no `more_info` (§16 Q6) |
+| 63 | 2026-10-07 | L10a (review) | §13 L2, L3a, D1 | Tests check the four-field body; D1 no longer checks `more_info` |
+| 64 | 2026-10-07 | L10a (review) | §13, §14 | New step L10a |
+| 65 | 2026-10-07 | L10a (review) | §16 | Q7 recorded: decommissioned credential issue stays 403 `40304` |

@@ -47,18 +47,17 @@ test('method not listed -> 405 40501 with Allow', async () => {
   assert.equal(res.headers.get('allow'), 'GET');
 });
 
-test('error body has all five fields', async () => {
+test('error body has exactly the four fields', async () => {
   for (const res of [
     await api('GET', '/no-such-path'),
     await api('GET', '/provinces', { headers: { Accept: 'text/html' } }),
   ]) {
-    assert.deepEqual(Object.keys(res.body).sort(), ['code', 'description', 'error', 'message', 'more_info']);
+    assert.deepEqual(Object.keys(res.body).sort(), ['code', 'description', 'error', 'message']);
     assert.equal(typeof res.body.code, 'number');
     assert.equal(typeof res.body.message, 'string');
     assert.ok(res.body.message.length > 0);
     assert.equal(typeof res.body.description, 'string');
-    assert.equal(res.body.more_info, `${baseUrl}/docs`);
-    assert.ok(Array.isArray(res.body.error));
+    assert.deepEqual(res.body.error, []); // no field problems
   }
 });
 

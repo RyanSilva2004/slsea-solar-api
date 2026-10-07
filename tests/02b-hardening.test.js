@@ -46,9 +46,8 @@ test('11 failed logins for one username -> the 11th is 429 42901', async () => {
   assertError(res, 429, 42901);
   assert.match(res.headers.get('retry-after'), /^[1-9][0-9]*$/);
   assert.equal(res.headers.get('cache-control'), 'no-store');
-  assert.deepEqual(Object.keys(res.body).sort(), ['code', 'description', 'error', 'message', 'more_info']);
+  assert.deepEqual(Object.keys(res.body).sort(), ['code', 'description', 'error', 'message']);
   assert.equal(res.body.description, 'Too many requests');
-  assert.equal(res.body.more_info, `${baseUrl}/docs`);
 
   // keys are separate
   assertError(await login(probeUsername(), 'wrong-password'), 401, 40103);
