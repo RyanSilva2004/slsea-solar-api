@@ -74,3 +74,46 @@ test('origin guard: missing or wrong X-Origin-Secret -> 403 40309', { skip: !ori
   const right = await api('GET', rootUrl);
   assert.equal(right.status, 200);
 });
+
+// §10 tooling: OpenAPI document and Swagger UI
+test('GET /openapi -> 200 OpenAPI 3.0.3 document (no Accept check)', async () => {
+  const res = await api('GET', '/openapi', { headers: { Accept: 'text/html' } });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.openapi, '3.0.3');
+  assert.equal(res.body.servers[0].url, process.env.PUBLIC_BASE_URL);
+  const flows = res.body.components.securitySchemes.oauth2.flows;
+  assert.equal(flows.password.tokenUrl, `${process.env.PUBLIC_BASE_URL}/token`);
+  assert.equal(flows.clientCredentials.tokenUrl, `${process.env.PUBLIC_BASE_URL}/token`);
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+});
+
+test('OpenAPI: 429 with Retry-After on /token and readings POST; If-Match required on PUT/DELETE', async () => {
+  const { paths } = (await api('GET', '/openapi')).body;
+  for (const op of [paths['/token'].post, paths['/installations/{installation-id}/readings'].post]) {
+    assert.ok(op.responses[429].headers['Retry-After']);
+  }
+  for (const op of [
+    paths['/installations/{installation-id}'].put,
+    paths['/installations/{installation-id}'].delete,
+    paths['/users/{user-id}'].put,
+    paths['/users/{user-id}'].delete,
+  ]) {
+    assert.ok(op.parameters.some((p) => p.$ref === '#/components/parameters/IfMatch'));
+  }
+});
+
+test('/docs -> 301 docs/, /docs/ -> Swagger UI page', async () => {
+  const headers = originSecret ? { 'X-Origin-Secret': originSecret } : {};
+  const redirect = await fetch(`${baseUrl}/docs`, { headers: { ...headers, Accept: 'text/html' }, redirect: 'manual' });
+  assert.equal(redirect.status, 301);
+  assert.equal(redirect.headers.get('location'), 'docs/');
+
+  const page = await fetch(`${baseUrl}/docs/`, { headers: { ...headers, Accept: 'text/html' } });
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get('content-type'), /^text\/html/);
+  assert.equal(page.headers.get('x-content-type-options'), 'nosniff');
+  assert.match(await page.text(), /swagger-ui-bundle\.js/);
+
+  const init = await fetch(`${baseUrl}/docs/swagger-ui-init.js`, { headers });
+  assert.match(await init.text(), /"url": "\/solar\/v1\.0\/openapi"/);
+});
