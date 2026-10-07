@@ -96,7 +96,7 @@ This is the **only** specification for the build. Build exactly what is written 
 │   │   ├── errors.js                ApiError class + error catalogue (§6.10)
 │   │   ├── audit.js                 security audit log lines (§7.12)
 │   │   ├── geography.js             in-memory geography cache + area helpers (§7.6)
-│   │   ├── derived.js               latest readings, reporting status, energy today, summaries (§8)
+│   │   ├── derived.js               `latestReadings`, `reportingStatus`, `energyToday`, `summary` (§8)
 │   │   ├── http-cache.js            ETag, Last-Modified, conditional GET, If-Match (§6.7, §6.8)
 │   │   ├── pagination.js            offset/limit parsing, envelope, next/previous links (§6.4)
 │   │   ├── query.js                 query-parameter parsing rules (§6.5)
@@ -392,7 +392,7 @@ Declare exactly these in the schemas (they already exist from the seed for the f
 | Reading | `{ "reading_id": 159313, "installation_id": "INS-000241", "recorded_at": "2026-10-04T08:15:00.000Z", "power_kw": 3.412, "energy_kwh": 10234.551, "voltage": 236.4 }` |
 | User | `{ "user_id": "7c2d…", "name": "Nimali Perera", "username": "nimali.p", "role": "ANALYST", "jurisdiction_level": "DISTRICT", "district_id": 4 }` |
 
-Overview and summary shapes: §9 EP8, EP5. The overview is built by `overview(...)` in `lib/representations.js`.
+Overview and summary shapes: §9 EP8, EP5. The overview is built by `overview(...)` and the summary by `generationSummary(...)` in `lib/representations.js`.
 
 ### 6.4 Collections and pagination
 
@@ -680,9 +680,10 @@ Every 4xx and 5xx body:
 
 Constants: reporting interval 15 min; silent threshold 30 min; Sri Lanka offset +05:30 (no DST).
 
-- Exports used by EP6 and EP8: `latestReadings(ids)` → map id → reading; `reportingStatus(installation, latest, now)`.
+- Exports: `latestReadings(ids)` → map id → reading (EP5, EP6, EP8); `reportingStatus(installation, latest, now)` (EP5, EP6, EP8); `energyToday(ids, now)` → map id → contribution (EP5); `summary(installations, now)` → `{ current_power_kw, energy_today_kwh, installations }` (EP5).
+- Every "newest reading per installation" aggregation sorts `{ installation_id: -1, recorded_at: -1 }` (the exact reverse of the index `{ installation_id: 1, recorded_at: 1 }`), so no in-memory sort runs. `allowDiskUse` is not used.
 
-- **Latest reading per installation:** aggregation on `readings`: `$match { installation_id: { $in: ids } }` → `$sort { installation_id: 1, recorded_at: -1 }` → `$group { _id: '$installation_id', doc: { $first: '$$ROOT' } }`. Returns a map id → reading.
+- **Latest reading per installation:** aggregation on `readings`: `$match { installation_id: { $in: ids } }` → `$sort { installation_id: -1, recorded_at: -1 }` → `$group { _id: '$installation_id', doc: { $first: '$$ROOT' } }`. Returns a map id → reading.
 - **Reporting status** (`now` = request time):
   - `DECOMMISSIONED` → `null`
   - no reading → `NEVER_REPORTED`
@@ -693,7 +694,10 @@ Constants: reporting interval 15 min; silent threshold 30 min; Sri Lanka offset 
   - `lastToday` = newest reading with `dayStart ≤ recorded_at ≤ now`. None → contributes 0.
   - `baseline` = newest reading with `recorded_at < dayStart`; if none, the oldest reading with `recorded_at ≥ dayStart`.
   - contribution = `lastToday.energy_kwh − baseline.energy_kwh`.
-  - Compute for many installations with aggregations (`$group` with `$first`/`$last` after sorting), not one query per installation.
+  - Compute for many installations with two aggregations, not one query per installation:
+    - today: `$match { installation_id: { $in: ids }, recorded_at: { $gte: dayStart, $lte: now } }` → `$sort { installation_id: 1, recorded_at: 1 }` → `$group { _id, first: { $first: '$energy_kwh' }, last: { $last: '$energy_kwh' } }`;
+    - baseline: `$match { installation_id: { $in: ids }, recorded_at: { $lt: dayStart } }` → `$sort { installation_id: -1, recorded_at: -1 }` → `$group { _id, energy: { $first: '$energy_kwh' } }`.
+    - contribution = `last − (baseline energy, or first when there is no baseline)`.
 - **Summary** over a set of installations:
   - `active` = count with status ACTIVE; `decommissioned` = count DECOMMISSIONED.
   - `reporting`, `silent`, `never_reported` = counts of ACTIVE installations by reporting status.
@@ -727,8 +731,8 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 
 ### EP5 — Generation summaries — GET
 - Paths: `/districts/{district-id}/generation-summary`, `/provinces/{province-id}/generation-summary`, `/generation-summary`.
-- Scope `generation:read`. No query parameters.
-- Order: unknown district/province → 404 `40401`; region not inside the caller's area → 403 `40302`; national path and caller not `NATIONAL` → 403 `40302`.
+- Scope `generation:read`. No query parameters: any query parameter → 400 `40002`.
+- Order: query parameters (400 `40002`) → unknown district/province → 404 `40401`; region not inside the caller's area → 403 `40302`; national path and caller not `NATIONAL` → 403 `40302`.
 - Installations = all installations whose substation is in the region (any status).
 - Response:
   ```json
@@ -1044,7 +1048,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 
 ### L9 — Generation summaries
 - EP5 with `lib/derived.js` (§8).
-- Tests: `08-summaries.test.js` (district 1 counts: active ≥ 26, decommissioned ≥ 1, never_reported ≥ 1 — exactly 26 / 1 / 1 on a fresh seed; numbers ≥ 0; `colombo.analyst` on district 4 → 403; province 1 as `colombo.analyst` → 403, as `western.analyst` → 200; national as `western.analyst` → 403, as `national.analyst` → 200 with active + decommissioned ≥ 240; admin → 403 `40301`; second request with `If-None-Match` → 304 when nothing changed; posting a reading changes the ETag).
+- Tests: `08-summaries.test.js` (district 1 counts: active ≥ 26, decommissioned ≥ 1, never_reported ≥ 1 — exactly 26 / 1 / 1 on a fresh seed; numbers ≥ 0; `colombo.analyst` on district 4 → 403; province 1 as `colombo.analyst` → 403, as `western.analyst` → 200; national as `western.analyst` → 403, as `national.analyst` → 200 with active + decommissioned ≥ 240; admin → 403 `40301`; second request with `If-None-Match` → 304 when nothing changed, on district 4 as `kandy.analyst` (no test file writes there); posting a reading changes the ETag).
 - **Done when:** tests pass.
 
 ### L10 — OpenAPI and Swagger UI
@@ -1082,8 +1086,8 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 | L5 Users + passwords | ☑ | 2026-10-07 | a1e9c5e | `routes/users.js` + `controllers/users.js`: EP13 list (filters `district-id`, `role`, `jurisdiction-level`, sorted by `username`) and create; EP14 GET/PUT/DELETE with `If-Match` and own-account 40305; EP15 own change (current password checked) and admin reset, both revoke older tokens; `lib/validation.js` user/password body rules (every field problem listed); `scripts/create-test-accounts.js` created all 7 accounts, second run skipped all 7; `04-users.test.js` 19/19 (incl. rate-limit reset test moved from `02b`); `npm test` 68 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on four runs in a row on one server process |
 | L6 Installations + credentials | ☑ | 2026-10-07 | 14150bd | `routes/installations.js` + `controllers/installations.js`: EP6 list (area installations loaded once, filters `province-id`, `district-id`, `substation-id`, `status`, `reporting-status` and paging in memory; region filter outside the area 403 `40302`) and create; EP7 GET/PUT/DELETE with `If-Match`, decommissioning clears the credential, DELETE refused when readings exist; EP12 credential issue (`no-store`, replaces the old secret, 403 `40304` when decommissioned); `lib/validation.js` installation body rules; `lib/derived.js` latest reading + reporting status; area helpers in `lib/geography.js`; `05-installations.test.js` 24/24 (review gate: EP12 rejects a request body); `npm test` 92 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process; no `TEST-` installation left afterwards, seeded installations unchanged |
 | L7 Readings | ☑ | 2026-10-07 | 9cb62ab | `routes/readings.js` + `controllers/readings.js`: EP10 GET (`from`/`to` window, `sort`, paging, Last-Modified = latest `received_at` or `created_at`) and POST (steps 1–9 in order; duplicate key on (installation, `recorded_at`) re-runs step 6); EP11 member (reading of another installation 404); EP9 last-known with `Content-Location`; `readingsLimiter` (120 / min per device installation, after `requireScope`, before `json-body`); `wrong_installation` audit line; `lib/validation.js` reading body rules; `06-readings.test.js` 21/21; `npm test` 113 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process, no 429 outside the limiter test (review gate: malformed path id at step 3 → 404, query parameters on POST → 400 `40002`, history count ≥ 672); test installations with readings are left `DECOMMISSIONED` (§12) |
-| L8 Overview + region readings | ☑ | 2026-10-07 | | EP8 overview in `routes/installations.js` + `controllers/installations.js` (`latestReadings` + `reportingStatus`, geography from the cache, `representations.overview`, Last-Modified = response time); EP17 `routes/region-readings.js` + `controllers/region-readings.js`: `/districts/{id}/readings` and `/provinces/{id}/readings`, filters checked against the path region and the given `district-id` (400 `40002`) → unknown region 404 → area 403 `40302`; region installations of any status → readings sorted by `recorded_at` then `installation_id`, `countDocuments`; `07-views.test.js` 13/13; `npm test` 126 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process, 429 only on `probe-` / dedicated `TEST-` keys (review gate: EP17 filter-in-region 400 before unknown region 404) |
-| L9 Generation summaries | ☐ | | | |
+| L8 Overview + region readings | ☑ | 2026-10-07 | cdb2948 | EP8 overview in `routes/installations.js` + `controllers/installations.js` (`latestReadings` + `reportingStatus`, geography from the cache, `representations.overview`, Last-Modified = response time); EP17 `routes/region-readings.js` + `controllers/region-readings.js`: `/districts/{id}/readings` and `/provinces/{id}/readings`, filters checked against the path region and the given `district-id` (400 `40002`) → unknown region 404 → area 403 `40302`; region installations of any status → readings sorted by `recorded_at` then `installation_id`, `countDocuments`; `07-views.test.js` 13/13; `npm test` 126 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process, 429 only on `probe-` / dedicated `TEST-` keys (review gate: EP17 filter-in-region 400 before unknown region 404) |
+| L9 Generation summaries | ☑ | 2026-10-07 | | `routes/summaries.js` + `controllers/summaries.js`: EP5 district, province and national summaries (query parameters 400 `40002` → unknown region 404 → area 403 `40302`; national only for `NATIONAL` callers); `lib/derived.js` `energyToday` (two aggregations: today first/last, baseline before the day) and `summary`; `representations.generationSummary`; ETag without `computed_at`; latest-reading and baseline sorts `{ installation_id: -1, recorded_at: -1 }` (DISTINCT_SCAN, 250 keys instead of 143,832; national summary ≈ 0.5 s); district 1 `energy_today_kwh` cross-checked with per-installation queries; `08-summaries.test.js` 8/8; `npm test` 134 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process, 429 only on `probe-` / dedicated `TEST-` keys (review gate: reversed sort, EP5 query parameters 400 first, 304 test on district 4) |
 | L10 OpenAPI + Swagger | ☐ | | | |
 | L11 Full acceptance + README | ☐ | | | |
 | D1 Production readiness | ☐ | | | |
@@ -1103,6 +1107,7 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 4 | L3a | Reversal of row 2: start-up accepted a `BOOTSTRAP_ADMIN_PASSWORD` of any length; §4/§7.9 now require 10–72 characters whenever set | §4, §7.9 | `config.js` checks the length and exits with code 1 and a clear message | (L3a) |
 | 5 | L3a | `/token` returned 401 for an unknown username without running bcrypt, so it answered faster than a wrong password | §7.2 | `checkPassword` compares against `DUMMY_HASH` when the user is missing | (L3a) |
 | 6 | L8 | `07-views.test.js` (own test) requested an offset beyond the count of the `substation-id=1` query without that filter, so the page was not empty | §6.4 | The request keeps the same filter | (L8) |
+| 7 | L9 | `GET /generation-summary` and national `GET /installations?reporting-status=…` answered 500 `50001` (bug since L6): the latest-reading `$sort { installation_id: 1, recorded_at: -1 }` did not match the index direction, so MongoDB sorted ~144k readings in memory and hit its 32 MB limit | §8 | Latest-reading and baseline aggregations sort `{ installation_id: -1, recorded_at: -1 }` (reversed index scan, DISTINCT_SCAN) | (L9) |
 
 ---
 
@@ -1174,3 +1179,8 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 50 | 2026-10-07 | L8 | §8 | `latestReadings` and `reportingStatus` are also used by EP8 |
 | 51 | 2026-10-07 | L8 | §13 L8 | `INS-000002`/`INS-000004` status asserted from the age of `last_known_reading`; Colombo region count compared with the per-installation sum, both with `to` = 2 hours before the run |
 | 52 | 2026-10-07 | L8 (review) | §9 EP17 | Check order: params incl. filter inside the path region / `district-id` (400 `40002`) → unknown region (404 `40401`) → area (403 `40302`); a filter on an unknown region → 400 `40002` (§16 Q5) |
+| 53 | 2026-10-07 | L9 (review) | §8 | Newest-reading aggregations sort `{ installation_id: -1, recorded_at: -1 }`; no `allowDiskUse` |
+| 54 | 2026-10-07 | L9 | §8, §3 | `lib/derived.js` exports `energyToday(ids, now)` and `summary(installations, now)`; energy today uses a today aggregation (first/last) and a baseline aggregation |
+| 55 | 2026-10-07 | L9 | §6.3 | The summary is built by `generationSummary(...)` in `lib/representations.js` |
+| 56 | 2026-10-07 | L9 (review) | §9 EP5 | Any query parameter → 400 `40002`, checked before unknown region (404) and area (403) |
+| 57 | 2026-10-07 | L9 (review) | §13 L9 | The 304 test runs on district 4 as `kandy.analyst` |

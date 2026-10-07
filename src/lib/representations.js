@@ -56,3 +56,15 @@ export function overview({ installation: doc, substation, district, province, re
     last_known_reading: latest ? reading(latest) : null,
   };
 }
+
+// §9 EP5: totals = summary(...) from lib/derived.js
+export function generationSummary({ area, day, computedAt, totals }) {
+  return {
+    area,
+    day,
+    computed_at: toIso(computedAt),
+    current_power_kw: totals.current_power_kw,
+    energy_today_kwh: totals.energy_today_kwh,
+    installations: totals.installations,
+  };
+}

@@ -11,6 +11,7 @@ import usersRouter from './routes/users.js';
 import installationsRouter from './routes/installations.js';
 import readingsRouter from './routes/readings.js';
 import regionReadingsRouter from './routes/region-readings.js';
+import summariesRouter from './routes/summaries.js';
 
 const app = express();
 
@@ -32,6 +33,7 @@ app.use('/solar/v1.0', usersRouter);
 app.use('/solar/v1.0', installationsRouter);
 app.use('/solar/v1.0', readingsRouter);
 app.use('/solar/v1.0', regionReadingsRouter);
+app.use('/solar/v1.0', summariesRouter);
 app.use(notFound);
 app.use(errorHandler);
 
