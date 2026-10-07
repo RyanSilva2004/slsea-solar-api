@@ -58,3 +58,14 @@ export const tokenLimiter = limiter('tokenLimiter', {
 export function resetTokenLimit(req) {
   return tokenLimiter.resetKey(tokenKey(req));
 }
+
+// §7.11: installation:<installation_id of the device token>
+function readingsKey(req) {
+  return `installation:${req.principal.installation.installation_id}`;
+}
+
+export const readingsLimiter = limiter('readingsLimiter', {
+  windowMs: 60 * 1000,
+  limit: 120,
+  keyGenerator: readingsKey,
+});

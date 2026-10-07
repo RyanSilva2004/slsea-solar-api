@@ -21,14 +21,14 @@ import { readInstallationBody } from '../lib/validation.js';
 import Installation from '../models/installation.js';
 import Reading from '../models/reading.js';
 
-const INSTALLATION_ID_PATTERN = /^INS-[0-9]{6}$/; // §6.1
+export const INSTALLATION_ID_PATTERN = /^INS-[0-9]{6}$/; // §6.1
 
 function outsideJurisdiction(message) {
   return new ApiError(40302, message);
 }
 
 // §6.1, §7.6: invalid path id, unknown id or outside the caller's area → 404 40401
-async function findInstallation(req) {
+export async function findInstallation(req) {
   const rawId = req.params.id;
   const installation = INSTALLATION_ID_PATTERN.test(rawId)
     ? await Installation.findOne({ installation_id: rawId }).lean()

@@ -139,3 +139,27 @@ export function readResetPasswordBody(body) {
   throwIfInvalid([...unknownFields(body, Object.keys(rules)), ...checkRules(body, rules)]);
   return body.new_password;
 }
+
+function finiteNumberRule(name) {
+  return (value) => (typeof value === 'number' && Number.isFinite(value) ? null : `${name} must be a finite number.`);
+}
+
+// §9 EP10 POST step 1
+const readingRules = {
+  recorded_at: (value) => (typeof value === 'string' ? null : 'recorded_at must be a string.'),
+  power_kw: finiteNumberRule('power_kw'),
+  energy_kwh: finiteNumberRule('energy_kwh'),
+  voltage: finiteNumberRule('voltage'),
+};
+
+// EP10 POST → { recorded_at (still a string), power_kw, energy_kwh, voltage }
+export function readReadingBody(body) {
+  const messages = { installation_id: 'installation_id comes from the URL.' };
+  throwIfInvalid([...unknownFields(body, Object.keys(readingRules), messages), ...checkRules(body, readingRules)]);
+  return {
+    recorded_at: body.recorded_at,
+    power_kw: body.power_kw,
+    energy_kwh: body.energy_kwh,
+    voltage: body.voltage,
+  };
+}
