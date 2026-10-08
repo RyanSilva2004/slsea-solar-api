@@ -104,7 +104,7 @@ It writes device secrets to `seed/seed-output/`, which is git-ignored.
 | `PUBLIC_BASE_URL` | base of every absolute URL the API returns (no trailing slash) |
 | `JWT_SECRET` | token signing (at least 32 characters) |
 | `BOOTSTRAP_ADMIN_USERNAME` | first admin's username (default `hq.admin`) |
-| `BOOTSTRAP_ADMIN_PASSWORD` | first admin's password (10–72 characters) |
+| `BOOTSTRAP_ADMIN_PASSWORD` | first admin's password (10–72 characters, at most 72 bytes in UTF-8) |
 | `ORIGIN_SECRET` | origin guard; leave empty locally |
 | `TEST_BASE_URL` | base URL for tests and scripts |
 | `TEST_ACCOUNT_PASSWORD` | password of the test accounts |

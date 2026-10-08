@@ -121,6 +121,12 @@ test('ADMIN with jurisdiction_level DISTRICT -> 400 40001', async () => {
   assertError(res, 400, 40001);
 });
 
+test('password of 40 characters but 80 bytes (40 x "é") -> 400 40001', async () => {
+  const res = await api('POST', '/users', { token: admin, body: newUserBody({ password: 'é'.repeat(40) }) });
+  assertError(res, 400, 40001);
+  assert.match(res.body.message, /72 bytes/);
+});
+
 test('missing, unknown and invalid fields -> 400 40001 listing each problem', async () => {
   const { name: _name, ...missingName } = newUserBody();
   assertError(await api('POST', '/users', { token: admin, body: missingName }), 400, 40001);

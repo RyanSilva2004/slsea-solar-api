@@ -10,9 +10,11 @@ import Installation from '../models/installation.js';
 
 const parseForm = express.urlencoded({ extended: false, limit: '16kb' });
 
+const MAX_SUBJECT_LENGTH = 64; // §7.12
+
 // §7.2, §7.12: every 40103 writes one token_rejected line
 function invalidCredentials(message, grant, subject) {
-  audit('token_rejected', { grant, subject });
+  audit('token_rejected', { grant, subject: subject === null ? null : subject.slice(0, MAX_SUBJECT_LENGTH) });
   return new ApiError(40103, message, { headers: { 'WWW-Authenticate': 'Basic realm="solar"' } });
 }
 

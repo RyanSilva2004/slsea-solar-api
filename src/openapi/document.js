@@ -88,7 +88,7 @@ const LEVEL = { type: 'string', enum: ['NATIONAL', 'PROVINCIAL', 'DISTRICT'] };
 const STATUS = { type: 'string', enum: ['ACTIVE', 'DECOMMISSIONED'] };
 const REPORTING_STATUS = { type: 'string', enum: ['REPORTING', 'SILENT', 'NEVER_REPORTED'] };
 const TIMESTAMP = { type: 'string', format: 'date-time', example: '2026-10-04T08:15:00.000Z' };
-const PASSWORD = { type: 'string', minLength: 10, maxLength: 72 };
+const PASSWORD = { type: 'string', minLength: 10, maxLength: 72, description: 'At most 72 bytes in UTF-8.' };
 
 // §9 EP6, EP7 body rules
 const installationFields = {
@@ -260,7 +260,7 @@ const schemas = {
   // §9 EP15
   OwnPasswordChange: body({
     current_password: { type: 'string', format: 'password' },
-    new_password: { ...PASSWORD, format: 'password', description: 'Different from the current password.' },
+    new_password: { ...PASSWORD, format: 'password', description: 'At most 72 bytes in UTF-8. Different from the current password.' },
   }),
   PasswordReset: body({ new_password: { ...PASSWORD, format: 'password' } }),
   PasswordChanged: object({ user_id: USER_ID, password_changed_at: TIMESTAMP }),

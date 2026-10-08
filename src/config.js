@@ -49,11 +49,12 @@ function readJwtSecret() {
   return secret;
 }
 
-// §4, §7.9: optional, but 10–72 characters whenever set
+// §4, §7.9: optional, but 10–72 characters and at most 72 bytes whenever set
 function readBootstrapAdminPassword() {
   const password = process.env.BOOTSTRAP_ADMIN_PASSWORD || '';
-  if (password !== '' && (password.length < 10 || password.length > 72)) {
-    fail('BOOTSTRAP_ADMIN_PASSWORD must be 10 to 72 characters long.');
+  const tooLong = password.length > 72 || Buffer.byteLength(password, 'utf8') > 72;
+  if (password !== '' && (password.length < 10 || tooLong)) {
+    fail('BOOTSTRAP_ADMIN_PASSWORD must be 10 to 72 characters long and at most 72 bytes in UTF-8.');
   }
   return password;
 }

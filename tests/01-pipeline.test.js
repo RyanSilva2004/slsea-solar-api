@@ -41,6 +41,10 @@ test('upper-case path -> 404 40403', async () => {
   assertError(await api('GET', '/Provinces'), 404, 40403);
 });
 
+test('invalid percent-encoding in a path id -> 404 40401 (no token needed)', async () => {
+  assertError(await api('GET', '/installations/%E0'), 404, 40401);
+});
+
 test('method not listed -> 405 40501 with Allow', async () => {
   const res = await api('POST', rootUrl);
   assertError(res, 405, 40501);

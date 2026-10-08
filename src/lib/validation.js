@@ -37,13 +37,20 @@ function checkRules(body, rules) {
   return errors;
 }
 
+// §7.8: bcrypt ignores everything after the first 72 bytes
 function isPassword(value) {
-  return typeof value === 'string' && value.length >= 10 && value.length <= 72;
+  return (
+    typeof value === 'string' &&
+    value.length >= 10 &&
+    value.length <= 72 &&
+    Buffer.byteLength(value, 'utf8') <= 72
+  );
 }
 
 // §7.8
 function passwordRule(name) {
-  return (value) => (isPassword(value) ? null : `${name} must be a string of 10 to 72 characters.`);
+  return (value) =>
+    isPassword(value) ? null : `${name} must be a string of 10 to 72 characters and at most 72 bytes in UTF-8.`;
 }
 
 // §9 EP13

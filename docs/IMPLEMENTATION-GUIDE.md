@@ -168,7 +168,7 @@ seed/seed-output/
 | `PUBLIC_BASE_URL` | `http://localhost:3000/solar/v1.0` | yes | every absolute URL the API returns; no trailing slash; `https://` in production |
 | `JWT_SECRET` | 64 random characters | yes, ≥ 32 chars | token signing |
 | `BOOTSTRAP_ADMIN_USERNAME` | `hq.admin` | no (default `hq.admin`) | §7.9 |
-| `BOOTSTRAP_ADMIN_PASSWORD` | — | yes when `users` is empty; 10–72 characters whenever set | §7.9 |
+| `BOOTSTRAP_ADMIN_PASSWORD` | — | yes when `users` is empty; 10–72 characters and at most 72 bytes in UTF-8 whenever set | §7.9 |
 | `ORIGIN_SECRET` | empty locally | no | §7.10; guard is off when empty |
 | `TEST_BASE_URL` | `http://localhost:3000/solar/v1.0` | tests/scripts (default `PUBLIC_BASE_URL`) | §11, §12 |
 | `TEST_ACCOUNT_PASSWORD` | — | tests/scripts | §11.1 |
@@ -176,7 +176,7 @@ seed/seed-output/
 | `SIM_SKIP` | `INS-000002,INS-000065` | simulator (this default) | §11.2 |
 
 - `config.js` stops the process with a clear message if a required variable is missing or invalid.
-- `config.js` checks that `BOOTSTRAP_ADMIN_PASSWORD`, when set, is 10–72 characters; otherwise it stops the process with a clear message.
+- `config.js` checks that `BOOTSTRAP_ADMIN_PASSWORD`, when set, is 10–72 characters and at most 72 bytes in UTF-8 (`Buffer.byteLength`); otherwise it stops the process with a clear message that names both limits.
 - `.env.example` lists every name above with placeholder values and no real secrets.
 
 ---
@@ -347,7 +347,7 @@ Declare exactly these in the schemas (they already exist from the seed for the f
 - Unknown path (including other versions such as `/solar/v2.0/...`) → 404 `40403`.
 - Known path, method not listed → 405 `40501` with `Allow: <methods>` (e.g. `Allow: GET, POST`).
 
-**Path id formats** (a value that does not match → 404 `40401`):
+**Path id formats** (a value that does not match, or that has invalid percent-encoding, → 404 `40401`):
 
 | Parameter | Pattern |
 |---|---|
@@ -374,7 +374,7 @@ Declare exactly these in the schemas (they already exist from the seed for the f
 - `json-body.js` = content-type check, then `express.json({ limit: '16kb' })`. Parse errors → 400 `40001` "Malformed JSON body". Body over 16kb → 400 `40001`. Unsupported charset or content encoding → 415 `41501`.
 - A JSON body must be a JSON object; anything else → 400 `40001`.
 - Request values reach database filters and updates only after validation as plain strings, numbers or dates. A request object, array or field is never placed into a filter or update as it arrived.
-- `error-handler.js` turns `ApiError` into the error body (§6.10). Any other error → log it, 500 `50001`, no stack trace.
+- `error-handler.js` turns `ApiError` into the error body (§6.10). A `URIError` (invalid percent-encoding in a path parameter) → 404 `40401`, not logged. Any other error → log it, 500 `50001`, no stack trace.
 
 ### 6.3 Representations
 
@@ -630,13 +630,13 @@ Every 4xx and 5xx body:
 
 ### 7.8 Passwords
 
-- `bcryptjs.hash(password, 10)`. Length 10–72 characters.
+- `bcryptjs.hash(password, 10)`. Length 10–72 characters and at most 72 bytes in UTF-8 (`Buffer.byteLength`); a longer value → 400 `40001` with a message naming the byte limit.
 - `password_changed_at = now` on create, change and reset (this revokes older tokens through `ver`).
 - Never returned.
 
 ### 7.9 Bootstrap admin
 
-- `BOOTSTRAP_ADMIN_PASSWORD` must be 10–72 characters whenever it is set (checked by `config.js`, §4).
+- `BOOTSTRAP_ADMIN_PASSWORD` must be 10–72 characters and at most 72 bytes in UTF-8 whenever it is set (checked by `config.js`, §4).
 - At start-up, if the `users` collection is empty:
   - `BOOTSTRAP_ADMIN_PASSWORD` missing → exit with an error.
   - Create `{ user_id: randomUUID(), name: "HQ Administrator", username: BOOTSTRAP_ADMIN_USERNAME, role: "ADMIN", jurisdiction_level: "NATIONAL", district_id: 1 }` with the hashed password.
@@ -667,7 +667,7 @@ Every 4xx and 5xx body:
 
 | Event | When | Fields |
 |---|---|---|
-| `token_rejected` | every 401 `40103` at `/token` | `grant` (`password` / `client_credentials` / null), `subject` (username or installation id as sent, or null) |
+| `token_rejected` | every 401 `40103` at `/token` | `grant` (`password` / `client_credentials` / null), `subject` (username or installation id as sent, cut to its first 64 characters, or null) |
 | `rate_limited` | every 429 | `limiter`, `key` |
 | `wrong_installation` | every 403 `40306` | `token_installation`, `path_installation` |
 
@@ -861,7 +861,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 - Body exactly: `name`, `username`, `password`, `role`, `jurisdiction_level`, `district_id`.
   - `name`: string, 1–100 characters after trimming; stored and returned trimmed.
   - `username`: `^[a-z0-9._-]{3,32}$`.
-  - `password`: string, 10–72 characters.
+  - `password`: string, 10–72 characters, at most 72 bytes in UTF-8 (§7.8).
   - `role`, `jurisdiction_level`: enums. `district_id`: existing district.
   - `role: ADMIN` with a level other than `NATIONAL` → 400 `40001`.
 - `username` taken → 409 `40904` (also catch error 11000).
@@ -884,10 +884,10 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 - **Own account** (`user-id` = caller):
   - Body exactly `current_password`, `new_password` → else 400 `40001`.
   - `current_password` wrong → 403 `40307`.
-  - `new_password` 10–72 chars and different from the current one → else 400 `40001`.
+  - `new_password` 10–72 chars, at most 72 bytes in UTF-8 (§7.8), and different from the current one → else 400 `40001`.
 - **Another account** — order: 40308 → body (400) → unknown user (404):
   - Caller lacks `users:manage` → 403 `40308`.
-  - Body exactly `new_password` (10–72 chars) → else 400 `40001`.
+  - Body exactly `new_password` (10–72 chars, at most 72 bytes in UTF-8, §7.8) → else 400 `40001`.
   - Unknown user → 404 `40401`.
 - Save new hash, `password_changed_at = updated_at = now`.
 - Response 200 (`Cache-Control: no-store`, `Pragma: no-cache`; errors do not carry them):
@@ -1084,8 +1084,17 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 - The README contains no passwords, secrets or connection strings, and no feature that is not in this file.
 - **Done when:** `npm test` passes completely twice in a row (the second run proves tests do not depend on a clean database); README steps work from a fresh clone.
 
+### L11b — Audit fixes
+- §7.8, §9 EP13/EP15, §4/§7.9: passwords and `BOOTSTRAP_ADMIN_PASSWORD` are 10–72 characters and at most 72 bytes in UTF-8; the OpenAPI password schemas state the byte limit.
+- §6.1, §6.2: a `URIError` from a path parameter → 404 `40401`, not logged.
+- §7.12: `token_rejected` `subject` is cut to 64 characters.
+- §13 D1: `ecosystem.config.cjs` sets `NODE_ENV=production`; nothing in `src/` reads `NODE_ENV`.
+- Tests: `04-users.test.js` creates a user with a 40 × `é` password (80 bytes) → 400 `40001`; `01-pipeline.test.js` `GET /installations/%E0` without a token → 404 `40401`.
+- Not changed (documented limitations): `tokenLimiter` keys by username / installation only (no per-IP limit); concurrent admin deletes or demotions; a reading arriving during an installation DELETE; no rate limit on read endpoints.
+- **Done when:** `npm test` passes; a server started with an 80-byte `BOOTSTRAP_ADMIN_PASSWORD` exits with code 1 and the byte-limit message; a `token_rejected` line for a 100-character username has a 64-character `subject`.
+
 ### D1 — Production readiness
-- `ecosystem.config.cjs`: app name `slsea-api`, script `src/server.js`, `cwd: __dirname`, `node_args: ['--env-file=' + path.join(__dirname, '.env')]` (an array: the absolute path may contain spaces), `instances: 1`, `autorestart: true`, `max_memory_restart: '300M'`.
+- `ecosystem.config.cjs`: app name `slsea-api`, script `src/server.js`, `cwd: __dirname`, `node_args: ['--env-file=' + path.join(__dirname, '.env')]` (an array: the absolute path may contain spaces), `instances: 1`, `autorestart: true`, `max_memory_restart: '300M'`, `env: { NODE_ENV: 'production' }`.
 - Confirm the origin guard (§7.10) and `PUBLIC_BASE_URL` are used everywhere (Location, links, OpenAPI `servers` and `tokenUrl`).
 - `tests/smoke.test.js` (§12) is built in this step; the README no longer marks it as added in D1.
 - Locally, pm2 runs through `npx pm2`; it is never added to `package.json`.
@@ -1116,6 +1125,7 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 | L10 OpenAPI + Swagger | ☑ | 2026-10-07 | b24bee7 | `src/openapi/document.js`: OpenAPI 3.0.3, 22 paths / 29 operations (matches the routers one to one), schemas for every representation, collection envelope, summary, overview, token, credential, password and `Error`; per-operation error responses list their codes from the `lib/errors.js` catalogue; `oauth2` password + clientCredentials flows; `info.description` with Swagger token steps, rate limits and the error table (generated from the catalogue); `/openapi`, `/docs` (301 → `docs/`), `/docs/` Swagger UI in `routes/tooling.js` + `controllers/tooling.js`; validated with `@apidevtools/swagger-parser` (scratchpad, not a dependency); headless Firefox: UI loads with `nosniff` and no error panel, password flow as `colombo.analyst` + "Try it out" `GET /installations` → 200, clientCredentials with `INS-000004` → token 200 and `GET /provinces` → 403 `40301`; `01-pipeline.test.js` +3 tests; `npm test` 137 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on the 4th and 5th of five runs in a row on one server process (summaries of runs 1–3 not captured), 429 only on `probe-` / dedicated `TEST-` keys (review gate: `/docs` redirect, 405 placement, filter examples) |
 | L10a Four-field error body | ☑ | 2026-10-07 | 4ac4591 | §6.10 error body is exactly `code`, `message`, `description`, `error` (always an array); `lib/errors.js` `errorBody` and the `config` import trimmed; OpenAPI `Error` schema has the four fields (`additionalProperties: false`) and `info.description` text updated; error-body assertions in `01-pipeline`, `02b-hardening`, `06-readings` expect four fields, `01-pipeline` also checks `error: []` without field problems; §16 Q6/Q7 answered; status codes, error codes and headers unchanged; OpenAPI document validates (swagger-parser); `npm test` 137 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on three runs in a row on one server process (review gate approved: step text names the field via §16 Q6, `additionalProperties: false` on `Error`, extra `error: []` check) |
 | L11 Full acceptance + README | ☑ | 2026-10-07 | f548d0e | Endpoint review against §9 (code read + live probes of 405/406/415/304/If-Match/filters/paging per family): one gap fixed (§15 #10); `02-token` no-store test also covers 405 and 406; README rewritten in the §13 L11 section order, no secrets; fresh clone (scratchpad): `npm install`, `.env`, `npm run dev`, `npm run accounts` (all 7 skipped), health, `/docs` 301, `/docs/` 200, `/openapi` 200; `npm test` 137 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on two runs in a row on one server process after the fix (one run before it, same result), 429 only on `probe-` / dedicated `TEST-` keys |
+| L11b Audit fixes | ☑ | 2026-10-09 | | Read-only security audit, then four fixes: password and `BOOTSTRAP_ADMIN_PASSWORD` byte limit (§15 #12), path `URIError` → 404 `40401` (§15 #13), `token_rejected` subject cut to 64 characters (§15 #14), `NODE_ENV=production` in pm2 (§15 #15); `npm audit --omit=dev` 0 vulnerabilities; `git log --all -- .env seed/seed-output` empty; verified without the database (app on an ephemeral port, user lookup stubbed): `/installations/%E0` → 404 `40401` with nothing logged, 100-character username → 64-character `subject`, 40 × `é` rejected and 36 × `é` (72 bytes) accepted, 80-byte `BOOTSTRAP_ADMIN_PASSWORD` → exit 1; first attempt blocked by Atlas Network Access (IP added by the user); `npm test` 149 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty), new tests `01-pipeline` `%E0` → 404 `40401` and `04-users` 80-byte password → 400 `40001` pass, no stack trace in the server log, 429 only on `probe-` / dedicated `TEST-` keys. Approved with: OpenAPI byte-limit text, README row, "72 bytes" message check, generic `URIError` 404 message |
 | D1 Production readiness | ☑ | 2026-10-07 | 72cc469 | `ecosystem.config.cjs` (`slsea-api`, `src/server.js`, `--env-file=.env`, 1 instance, autorestart, 300M); `tests/smoke.test.js` built (§16 Q9); README "Deployment" (Node 24, `npm ci --omit=dev`, pm2 start/save/startup, update command); `PUBLIC_BASE_URL` confirmed as the only source of absolute URLs (`Location`/`Content-Location` in `lib/http-cache.js` and `controllers/readings.js`, paging links, OpenAPI `servers` + both `tokenUrl`s), origin guard is pipeline step 1 for every request; under `npx pm2` (7.0.4) with `ORIGIN_SECRET` set: requests without or with a wrong header → 403 `40309` (health, API, `/openapi`, `/token`), `npm run test:smoke` 10/10 with the header, `01-pipeline` origin guard test passes; with `PUBLIC_BASE_URL=https://example.test/solar/v1.0` `Strict-Transport-Security` on every sampled response (200, 301, 400, 401, 403, 404, 405, 406) and the returned URLs use the https base; pm2 killed, nothing on `PORT`. Approved with: §16 Q8 tooling routes exempt from `ETag`/`Last-Modified`; `cwd: __dirname` + absolute `--env-file` path (§15 #11); pm2 started from another folder → `npm test` 147 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty; the run includes `smoke.test.js`), 429 only on `probe-` / dedicated `TEST-` keys |
 | D2 Device simulator | ☐ | | | |
 
@@ -1138,6 +1148,10 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 9 | L10 | `/solar/v1.0/docs/package.json` answered swagger-ui-express's plain-text 404 instead of the error body | §6.10, §10 | Routed to `not-found.js` → 404 `40403` | (L10) |
 | 10 | L11 | `/token` 405 (`GET`/`PUT`) and 406 (`Accept: text/html`) responses had no `Cache-Control: no-store` / `Pragma: no-cache` (bug since L3): the headers were set only by the POST handler chain, and 406 is answered before the router | §7.2, §6.11 | `security-headers.js` (step 0) sets both on every `/solar/v1.0/token` response; the route-level `noStore` was removed; `02-token` asserts them on 405 and 406 | f548d0e |
 | 11 | D1 | pm2 (own config) started outside the repo folder crash-looped with `.env: not found`: in cluster mode Node resolves the relative `--env-file=.env` against the pm2 daemon's folder, so `cwd` alone does not help (also affects `pm2 startup` at boot) | §13 D1 | `node_args` passes the absolute `.env` path as an array (user's choice); started from another folder → 0 restarts | (D1 approved) |
+| 12 | L11b | Passwords and `BOOTSTRAP_ADMIN_PASSWORD` were limited to 72 characters, not bytes: 40 × `é` (80 bytes) was accepted, bcrypt kept only the first 72 bytes, and a different password with the same first 72 bytes logged in | §7.8, §4, §7.9, §9 EP13, EP15 | `lib/validation.js` and `config.js` also require `Buffer.byteLength ≤ 72`; messages name the byte limit; OpenAPI password schemas state it; `04-users` test | (L11b) |
+| 13 | L11b | A path parameter with invalid percent-encoding (e.g. `/installations/%E0`) answered 500 `50001` and logged a stack trace, without a token (bug since L2): the router throws a `URIError` before any handler runs | §6.1, §6.2 | `error-handler.js` answers a `URIError` with 404 `40401` and does not log it; `01-pipeline` test | (L11b) |
+| 14 | L11b | `token_rejected` logged `subject` as sent, up to the 16kb form limit (bug since L3a) | §7.12 | `controllers/token.js` cuts `subject` to 64 characters | (L11b) |
+| 15 | L11b | `ecosystem.config.cjs` did not set `NODE_ENV`, so production ran in Express's development mode | §13 D1 | `env: { NODE_ENV: 'production' }`; nothing in `src/` reads `NODE_ENV` (Express uses it only for `view cache` and finalhandler's error page, neither of which is reached) | (L11b) |
 
 ---
 
@@ -1234,3 +1248,9 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 71 | 2026-10-07 | D1 | §13 D1 | Locally pm2 runs through `npx pm2`, never a `package.json` entry |
 | 72 | 2026-10-07 | D1 (review) | §6.7, §6.11, §10 | Tooling routes (`GET /`, `/openapi`, `/docs`, `/docs/`) send no `ETag`/`Last-Modified` (§16 Q8) |
 | 73 | 2026-10-07 | D1 (review) | §13 D1 | `ecosystem.config.cjs` sets `cwd: __dirname` and `node_args: ['--env-file=' + path.join(__dirname, '.env')]` |
+| 74 | 2026-10-08 | L11b (user) | §7.8, §9 EP13, EP15 | Passwords are 10–72 characters and at most 72 bytes in UTF-8 (`Buffer.byteLength`); otherwise 400 `40001` with a message naming the byte limit |
+| 75 | 2026-10-08 | L11b (user) | §4, §7.9 | `BOOTSTRAP_ADMIN_PASSWORD`, when set, is 10–72 characters and at most 72 bytes in UTF-8; `config.js` exits with a message naming both limits |
+| 76 | 2026-10-08 | L11b | §6.1, §6.2 | A `URIError` (invalid percent-encoding in a path parameter) → 404 `40401`, not logged |
+| 77 | 2026-10-08 | L11b (user) | §7.12 | `token_rejected` `subject` is cut to its first 64 characters |
+| 78 | 2026-10-08 | L11b | §13 D1 | `ecosystem.config.cjs` sets `env: { NODE_ENV: 'production' }` |
+| 79 | 2026-10-08 | L11b | §13, §14 | New step L11b (audit fixes); the per-key-only `tokenLimiter`, concurrent admin removal, a reading arriving during an installation DELETE and unlimited read endpoints stay documented limitations |
