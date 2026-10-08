@@ -267,6 +267,10 @@ pm2 startup          # run the command it prints, so pm2 starts on boot
 git pull && npm ci --omit=dev && pm2 reload slsea-api
 ```
 
+**Automatic deployment**
+
+`main` is the development branch; a release is `git push origin main:live`. The GitHub Actions workflow (`.github/workflows/deploy.yml`) runs the `check` job (`npm ci`, `node --check` on `src/` and `scripts/`) on every push to `main` and `live`. A push to `live` then runs `scripts/deploy.sh` on the EC2 instance through AWS Systems Manager (OIDC role, no access keys): fast-forward to `origin/live`, `npm ci --omit=dev`, `pm2 startOrReload`, `pm2 save` and a 30-second health check, rolling back to the previous commit on any failure. Last, it runs `tests/smoke.test.js` against the public URL. The deploy and smoke jobs run only when the repository variable `AWS_ROLE_ARN` is set (with `AWS_REGION`, `EC2_INSTANCE_ID` and `PUBLIC_API_URL`); the smoke job reads the secret `TEST_ACCOUNT_PASSWORD`.
+
 **Production behaviour**
 
 - With `ORIGIN_SECRET` set, every request without the matching `X-Origin-Secret` header gets 403 `40309`.

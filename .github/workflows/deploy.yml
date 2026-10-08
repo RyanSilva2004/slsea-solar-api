@@ -1,0 +1,88 @@
+# §13 D3: check on main and live; deploy and smoke test on live only
+name: deploy
+
+on:
+  push:
+    branches: [main, live]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: node --check on src/ and scripts/
+        run: find src scripts -name '*.js' -print0 | xargs -0 -n 1 node --check
+
+  deploy:
+    needs: check
+    if: github.ref == 'refs/heads/live' && vars.AWS_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Run scripts/deploy.sh through SSM
+        env:
+          INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+        run: |
+          command_id=$(aws ssm send-command \
+            --document-name AWS-RunShellScript \
+            --instance-ids "$INSTANCE_ID" \
+            --comment "slsea-api deploy ${GITHUB_SHA::7}" \
+            --parameters 'commands=["sudo -u ubuntu -i bash /home/ubuntu/slsea-solar-api/scripts/deploy.sh"]' \
+            --query 'Command.CommandId' --output text)
+          echo "SSM command $command_id"
+
+          status=Pending
+          for _ in $(seq 60); do
+            sleep 10
+            status=$(aws ssm get-command-invocation \
+              --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+              --query Status --output text 2>/dev/null || echo Pending)
+            echo "status: $status"
+            case "$status" in
+              Pending|InProgress|Delayed|Cancelling) ;;
+              *) break ;;
+            esac
+          done
+
+          echo '--- stdout ---'
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+            --query StandardOutputContent --output text || true
+          echo '--- stderr ---'
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+            --query StandardErrorContent --output text || true
+
+          if [ "$status" != Success ]; then
+            echo "::error::deploy finished with status $status"
+            exit 1
+          fi
+
+  smoke:
+    needs: deploy
+    if: github.ref == 'refs/heads/live'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Smoke test against the public API
+        env:
+          TEST_BASE_URL: ${{ vars.PUBLIC_API_URL }}
+          ORIGIN_SECRET: ''
+          TEST_ACCOUNT_PASSWORD: ${{ secrets.TEST_ACCOUNT_PASSWORD }}
+        run: node --env-file-if-exists=.env --test tests/smoke.test.js
