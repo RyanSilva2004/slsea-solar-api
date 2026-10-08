@@ -81,9 +81,13 @@ test('/token body over 16kb -> 400 40001', async () => {
   assertError(res, 400, 40001);
 });
 
-test('security headers on GET / and on a 404; no CORS; no HSTS over http', async () => {
-  for (const res of [await api('GET', rootUrl), await api('GET', '/no-such-path')]) {
+test('security headers on GET /, a 404 and the Swagger UI page; no CORS; no HSTS over http', async () => {
+  const docs = await api('GET', '/docs/', { headers: { Accept: 'text/html' } });
+  assert.equal(docs.status, 200);
+  for (const res of [await api('GET', rootUrl), await api('GET', '/no-such-path'), docs]) {
     assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(res.headers.get('x-frame-options'), 'DENY');
+    assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
     assert.equal(res.headers.get('access-control-allow-origin'), null);
     if (baseUrl.startsWith('http://')) {
       assert.equal(res.headers.get('strict-transport-security'), null);

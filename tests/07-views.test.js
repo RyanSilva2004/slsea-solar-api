@@ -162,6 +162,7 @@ test('?substation-id=8 on district 1 -> 400 40002; bad params -> 400; unknown di
   assertError(await api('GET', '/districts/1/readings?district-id=1', { token: colomboAnalyst }), 400, 40002);
   assertError(await api('GET', '/districts/1/readings?limit=101', { token: colomboAnalyst }), 400, 40002);
   assertError(await api('GET', '/districts/1/readings?from=yesterday', { token: colomboAnalyst }), 400, 40003);
+  assertError(await api('GET', '/districts/1/readings?from=2026-02-30T00:00:00Z', { token: colomboAnalyst }), 400, 40003);
   assertError(await api('GET', '/districts/99/readings', { token: colomboAnalyst }), 404, 40401);
   assertError(await api('GET', '/districts/abc/readings', { token: colomboAnalyst }), 404, 40401);
 });

@@ -6,6 +6,8 @@ const TOKEN_PATH = '/solar/v1.0/token';
 
 export default function securityHeaders(req, res, next) {
   res.set('X-Content-Type-Options', 'nosniff');
+  res.set('X-Frame-Options', 'DENY');
+  res.set('Referrer-Policy', 'no-referrer');
   if (https) {
     res.set('Strict-Transport-Security', 'max-age=31536000');
   }

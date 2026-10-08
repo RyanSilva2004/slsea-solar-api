@@ -147,6 +147,14 @@ test('recorded_at without offset, 10 min ahead, 8 days old -> 400 40003', async 
   assertError(await postReading(site.installation_id, firstToken, reading(8 * 24 * 60, 101)), 400, 40003);
 });
 
+// §6.6: an impossible date is a format error, not rolled over to 2026-03-02 and then refused as too old
+test('recorded_at 2026-02-30 -> 400 40003 with the format message', async () => {
+  const res = await postReading(site.installation_id, firstToken, reading(45, 101, { recorded_at: '2026-02-30T08:00:00Z' }));
+  assertError(res, 400, 40003);
+  assert.match(res.body.message, /time zone offset/);
+  assert.doesNotMatch(res.body.message, /7 days/);
+});
+
 test('power > capacity x 1.05 and voltage 300 -> 400 40004', async () => {
   assertError(await postReading(site.installation_id, firstToken, reading(45, 101, { power_kw: 5.3 })), 400, 40004);
   assertError(await postReading(site.installation_id, firstToken, reading(45, 101, { voltage: 300 })), 400, 40004);
@@ -246,6 +254,8 @@ test('from >= to -> 400 40003; bad timestamp -> 400 40003', async () => {
   const same = await api('GET', `/installations/INS-000004/readings?from=${time}&to=${time}`, { token: colomboAnalyst });
   assertError(same, 400, 40003);
   assertError(await api('GET', '/installations/INS-000004/readings?from=yesterday', { token: colomboAnalyst }), 400, 40003);
+  const impossible = '/installations/INS-000004/readings?from=2026-02-30T00:00:00Z';
+  assertError(await api('GET', impossible, { token: colomboAnalyst }), 400, 40003);
 });
 
 test('readings of an installation outside the area -> 404 40401', async () => {

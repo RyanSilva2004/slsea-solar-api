@@ -5,13 +5,15 @@
   "private": true,
   "type": "module",
   "main": "src/server.js",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "start": "node --env-file=.env src/server.js",
     "dev": "node --env-file=.env --watch src/server.js",
     "test": "node --env-file=.env --test \"tests/*.test.js\"",
     "test:smoke": "node --env-file=.env --test tests/smoke.test.js",
-    "accounts": "node --env-file=.env scripts/create-test-accounts.js",
-    "simulate": "node --env-file=.env scripts/simulate.js"
+    "accounts": "node --env-file=.env scripts/create-test-accounts.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

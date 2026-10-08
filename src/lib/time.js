@@ -3,8 +3,20 @@
 const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
 const SRI_LANKA_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
 
+// §6.6: the date and time must exist (Date.parse rolls 2026-02-30 over to 2026-03-02)
+function dateAndTimeExist(text) {
+  const [y, m, d, h, mi, s] = text.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/).slice(1).map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d, h, mi, s));
+  return (
+    date.getUTCFullYear() === y &&
+    date.getUTCMonth() === m - 1 &&
+    date.getUTCDate() === d &&
+    date.getUTCHours() === h
+  );
+}
+
 export function parseTimestamp(text) {
-  if (typeof text !== 'string' || !TIMESTAMP_PATTERN.test(text)) {
+  if (typeof text !== 'string' || !TIMESTAMP_PATTERN.test(text) || !dateAndTimeExist(text)) {
     return null;
   }
   const ms = Date.parse(text);

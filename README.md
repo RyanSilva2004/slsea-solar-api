@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Student | K D R Silva|
+| Student | K D R Silva |
 | NIBM index | BSCCOMP24.2P-059 |
 | Coventry index | 16110614 |
 | Module | NB6007CEM Web API Development |
@@ -54,10 +54,29 @@ Request path: client → API Gateway → Caddy → Node/Express → MongoDB Atla
   - In production the API Gateway also throttles every route to 50 requests/s and `POST /token` to 5 requests/s.
   - There is no per-IP limit on failed logins. Trying a few passwords against many different usernames (password spraying) is a known limitation.
 - **Security headers**
-  - `X-Content-Type-Options: nosniff` on every response. `Strict-Transport-Security` when served over `https://`.
-  - `Cache-Control: no-store` on token and secret responses. No CORS headers.
-  - Optional origin guard via `X-Origin-Secret`.
+  - `Strict-Transport-Security: max-age=31536000` (when served over `https://`)
+  - `X-Content-Type-Options: nosniff`
+  - `X-Frame-Options: DENY`
+  - `Referrer-Policy: no-referrer`
 - **OpenAPI.** An OpenAPI 3.0.3 document at `/openapi`, and Swagger UI at `/docs` with password and client-credentials sign-in.
+
+## Design notes
+
+**Richardson Maturity Model: Level 2**
+
+- Resources have their own URIs (`/installations/INS-000004`, `/installations/INS-000004/readings`, …).
+- The HTTP methods are used as intended: GET reads, POST creates, PUT replaces, DELETE removes.
+- Responses use the correct status codes and headers: `ETag` / `Last-Modified` with 304 for conditional GET, 201 with `Location` for creates, `If-Match` with 412.
+- It is not Level 3. Representations carry no hypermedia controls. The only links are `Location` / `Content-Location` headers and the paging `next` / `previous` URLs, and the bare `/solar/v1.0` has no entry-point document.
+
+**Access control: scopes plus jurisdiction**
+
+- Scopes decide **what** a caller may do. Each role maps to a set of scopes. `readings:write` is for device tokens only, and users get read scopes (plus `installations:write`, `credentials:issue` or `users:manage` by role).
+- One attribute check decides **which** data a user sees: the user's jurisdiction (district, province or national).
+  - An installation id outside the area answers 404, so the API does not reveal that it exists.
+  - A region filter or path outside the area answers 403 `40302`.
+- Full attribute-based access control (ABAC) was not needed. ABAC means policies over many user, resource and context attributes, such as per-substation operators or time-limited access. Scopes plus jurisdiction are simpler to reason about, test and audit.
+- Trade-off: the model is coarse. Any new access rule needs a code change, not a policy change.
 
 ## Tech stack
 
