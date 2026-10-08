@@ -6,9 +6,16 @@
 | NIBM index | BSCCOMP24.2P-059 |
 | Coventry index | 16110614 |
 | Module | NB6007CEM Web API Development |
-| Live API | _to be added_ |
-| Live OpenAPI (Swagger UI) | _to be added_ |
 | Repository | https://github.com/RyanSilva2004/slsea-solar-api |
+
+### Live links
+
+| What | URL |
+|---|---|
+| Live API (base path; add a resource, e.g. `/provinces`) | https://gv9b9p7blb.execute-api.ap-southeast-2.amazonaws.com/solar/v1.0 |
+| Swagger UI | https://gv9b9p7blb.execute-api.ap-southeast-2.amazonaws.com/solar/v1.0/docs/ |
+| OpenAPI JSON | https://gv9b9p7blb.execute-api.ap-southeast-2.amazonaws.com/solar/v1.0/openapi |
+| Health | https://gv9b9p7blb.execute-api.ap-southeast-2.amazonaws.com/ |
 
 A JSON REST API for the Sri Lanka Sustainable Energy Authority (SLSEA). Smart meters write
 generation readings for their own installation; SLSEA users read data inside their jurisdiction.
@@ -44,6 +51,8 @@ Request path: client → API Gateway → Caddy → Node/Express → MongoDB Atla
   - `POST /token`: 10 failed requests per 15 minutes per username or installation. A success resets the count.
   - `POST /installations/{installation-id}/readings`: 120 requests per minute per device installation.
   - Over the limit you get 429 `42901` with `Retry-After`.
+  - In production the API Gateway also throttles every route to 50 requests/s and `POST /token` to 5 requests/s.
+  - There is no per-IP limit on failed logins. Trying a few passwords against many different usernames (password spraying) is a known limitation.
 - **Security headers**
   - `X-Content-Type-Options: nosniff` on every response. `Strict-Transport-Security` when served over `https://`.
   - `Cache-Control: no-store` on token and secret responses. No CORS headers.
@@ -108,8 +117,6 @@ It writes device secrets to `seed/seed-output/`, which is git-ignored.
 | `ORIGIN_SECRET` | origin guard; leave empty locally |
 | `TEST_BASE_URL` | base URL for tests and scripts |
 | `TEST_ACCOUNT_PASSWORD` | password of the test accounts |
-| `SIM_DEVICES_FILE` | device list for the simulator |
-| `SIM_SKIP` | installations the simulator skips |
 
 **npm scripts**
 
@@ -120,7 +127,6 @@ It writes device secrets to `seed/seed-output/`, which is git-ignored.
 | `npm test` | full test suite (server must be running) |
 | `npm run test:smoke` | read-only smoke tests, safe against production |
 | `npm run accounts` | create the test accounts |
-| `npm run simulate` | device simulator (`scripts/simulate.js` is added in step D2) |
 
 **Local URLs**
 
@@ -160,6 +166,8 @@ Created by `npm run accounts`, all with the password from `TEST_ACCOUNT_PASSWORD
 | `INS-000066` | 4 Kandy | 8 | decommissioned | DECOMMISSIONED | none | 384 |
 
 `INS-000004` (Colombo, substation 1) is a normal site. Its device secret is in `seed/seed-output/test-device.json` on the machine that ran the seed.
+
+There is no device simulator. Readings are posted by hand as a device: get a device token (client-credentials grant, below or with **Authorize → clientCredentials** in Swagger UI), then `POST /installations/{installation-id}/readings` from Swagger UI or Postman. Because nothing posts readings for the seeded sites, every active seeded site with readings shows `SILENT` once the seed is more than 30 minutes old. That is the correct status; a site shows `REPORTING` after a device posts a current reading.
 
 ### curl examples
 
@@ -239,7 +247,19 @@ Write tests create their own installations with a `meter_id` starting with `TEST
 
 ## Deployment
 
-The API runs on an EC2 instance as one process under pm2 (`ecosystem.config.cjs`: app `slsea-api`, `src/server.js` with the `.env` next to `ecosystem.config.cjs`, whatever folder pm2 is started from, 1 instance, restart above 300 MB).
+```
+client ──HTTPS──▶ AWS API Gateway (HTTP API, ap-southeast-2)
+                    throttling: 50 req/s per route, POST /token 5 req/s
+                    adds the X-Origin-Secret header
+                  ──HTTPS──▶ Caddy on EC2 (Sydney; Let's Encrypt certificate)
+                              ──▶ Node.js/Express under pm2 (localhost:3000)
+                                    ──TLS──▶ MongoDB Atlas (Mumbai)
+```
+
+- Clients only reach the API through the gateway over HTTPS. The gateway adds `X-Origin-Secret`, and the app refuses any request without the matching value (403 `40309`), so calling the EC2 instance directly does not work.
+- Caddy terminates HTTPS on the instance with a Let's Encrypt certificate and forwards to Node on `localhost:3000`.
+- The API runs as one process under pm2 (`ecosystem.config.cjs`: app `slsea-api`, `src/server.js` with the `.env` next to `ecosystem.config.cjs`, whatever folder pm2 is started from, 1 instance, restart above 300 MB, `NODE_ENV=production`).
+- Data lives in MongoDB Atlas (Mumbai), reached over TLS.
 
 **First install**
 
@@ -261,18 +281,24 @@ pm2 save
 pm2 startup          # run the command it prints, so pm2 starts on boot
 ```
 
-**Update**
+**Releasing an update (manual)**
+
+`main` is the development branch and `live` is what the server runs. A release is done by hand:
 
 ```bash
-git pull && npm ci --omit=dev && pm2 reload slsea-api
+git push origin main:live                  # on the laptop
+ssh ubuntu@<instance>                      # then, on the server:
+bash ~/slsea-solar-api/scripts/deploy.sh
 ```
 
-**Automatic deployment**
+`scripts/deploy.sh` fast-forwards the server's checkout to `origin/live`, runs `npm ci --omit=dev`, `pm2 startOrReload` and `pm2 save`, then checks `GET /` for up to 30 seconds. If anything fails after the merge it rolls back to the previous commit. It refuses to run if tracked files have local changes and prints `up to date` when there is nothing new. After a release, run the smoke tests against the live URL (see below).
 
-`main` is the development branch; a release is `git push origin main:live`. The GitHub Actions workflow (`.github/workflows/deploy.yml`) runs the `check` job (`npm ci`, `node --check` on `src/` and `scripts/`) on every push to `main` and `live`. A push to `live` then runs `scripts/deploy.sh` on the EC2 instance through AWS Systems Manager (OIDC role, no access keys): fast-forward to `origin/live`, `npm ci --omit=dev`, `pm2 startOrReload`, `pm2 save` and a 30-second health check, rolling back to the previous commit on any failure. Last, it runs `tests/smoke.test.js` against the public URL. The deploy and smoke jobs run only when the repository variable `AWS_ROLE_ARN` is set (with `AWS_REGION`, `EC2_INSTANCE_ID` and `PUBLIC_API_URL`); the smoke job reads the secret `TEST_ACCOUNT_PASSWORD`.
+**Continuous integration**
+
+The GitHub Actions workflow (`.github/workflows/deploy.yml`) runs the `check` job on every push to `main` and `live`: `npm ci`, then `node --check` on every `.js` file in `src/` and `scripts/`. Deployment is not automatic. The workflow also contains `deploy` and `smoke` jobs, but they only run when the repository variable `AWS_ROLE_ARN` is set, and it is not set.
 
 **Production behaviour**
 
 - With `ORIGIN_SECRET` set, every request without the matching `X-Origin-Secret` header gets 403 `40309`.
 - With an `https://` `PUBLIC_BASE_URL`, every response carries `Strict-Transport-Security: max-age=31536000`. Every absolute URL the API returns (`Location`, `Content-Location`, paging links, OpenAPI `servers` and `tokenUrl`) is built from `PUBLIC_BASE_URL`.
-- Check a deployment with `npm run test:smoke`, with `TEST_BASE_URL` set to the public URL.
+- Check a deployment with the read-only smoke tests: `TEST_BASE_URL=https://gv9b9p7blb.execute-api.ap-southeast-2.amazonaws.com/solar/v1.0 npm run test:smoke` (leave `ORIGIN_SECRET` empty; the gateway adds the header).

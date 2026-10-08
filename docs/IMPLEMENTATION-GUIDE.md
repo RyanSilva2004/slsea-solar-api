@@ -110,11 +110,10 @@ This is the **only** specification for the build. Build exactly what is written 
 │       └── document.js              OpenAPI 3.0.3 document as a JS object (§10)
 ├── scripts/
 │   ├── create-test-accounts.js      (§11.1)
-│   ├── simulate.js                  (§11.2, step D2)
-│   └── deploy.sh                    server deploy with rollback (step D3)
+│   └── deploy.sh                    server deploy with rollback, run by hand over SSH (step D3)
 ├── tests/                           node:test files (§12)
 ├── .github/
-│   └── workflows/deploy.yml         check, deploy and smoke jobs (step D3)
+│   └── workflows/deploy.yml         check job; deploy and smoke jobs never run (step D3)
 ├── ecosystem.config.cjs             pm2 config (step D1)
 ├── .env.example
 ├── .gitignore
@@ -146,7 +145,6 @@ This is the **only** specification for the build. Build exactly what is written 
 | `test` | `node --env-file=.env --test "tests/*.test.js"` |
 | `test:smoke` | `node --env-file=.env --test tests/smoke.test.js` |
 | `accounts` | `node --env-file=.env scripts/create-test-accounts.js` |
-| `simulate` | `node --env-file=.env scripts/simulate.js` |
 
 ### 3.3 `.gitignore`
 
@@ -175,8 +173,6 @@ seed/seed-output/
 | `ORIGIN_SECRET` | empty locally | no | §7.10; guard is off when empty |
 | `TEST_BASE_URL` | `http://localhost:3000/solar/v1.0` | tests/scripts (default `PUBLIC_BASE_URL`) | §11, §12 |
 | `TEST_ACCOUNT_PASSWORD` | — | tests/scripts | §11.1 |
-| `SIM_DEVICES_FILE` | `seed/seed-output/device-credentials.json` | simulator | §11.2 |
-| `SIM_SKIP` | `INS-000002,INS-000065` | simulator (this default) | §11.2 |
 
 - `config.js` stops the process with a clear message if a required variable is missing or invalid.
 - `config.js` checks that `BOOTSTRAP_ADMIN_PASSWORD`, when set, is 10–72 characters and at most 72 bytes in UTF-8 (`Buffer.byteLength`); otherwise it stops the process with a clear message that names both limits.
@@ -309,6 +305,7 @@ Declare exactly these in the schemas (they already exist from the seed for the f
 | `INS-000066` | 4 Kandy | 8 | decommissioned | DECOMMISSIONED | none | 384 |
 
 - `INS-000004` (Colombo, substation 1) is a normal site; its secret is in `seed/seed-output/test-device.json` on the machine that ran the seed.
+- No process posts readings for seeded installations (§11.2). Once the seed is more than 30 minutes old, every ACTIVE seeded installation with readings is `SILENT` (§8); this is correct behaviour. An installation shows `REPORTING` only after a device posts a current reading for it.
 - The Atlas database is already seeded. Re-seeding is done by the user only (before submission), never by the agent or the app:
   `cd seed && python3 seed_slsea.py --uri "<MONGODB_URI>" --drop`
   Run from `seed/`, it writes device secrets to `seed/seed-output/` (git-ignored).
@@ -663,6 +660,8 @@ Every 4xx and 5xx body:
 - `handler`: `next(new ApiError(42901, …, { headers: { 'Retry-After': seconds } }))`, where `seconds` = whole seconds until `req.rateLimit.resetTime`, at least 1.
 - Each 429 writes a `rate_limited` audit line (§7.12).
 - Counters live in the process; the API runs as one process (D1).
+- In production the API Gateway (HTTP API) throttles every route to 50 requests/s and `POST /token` to 5 requests/s, in front of these limiters.
+- There is no per-IP limit on failed logins. Password guessing is covered by the per-account / per-device `tokenLimiter` lockout and the gateway `/token` throttle. Password spraying (a few attempts each against many usernames) is not limited further; it is a documented limitation.
 
 ### 7.12 Audit log (`lib/audit.js`)
 
@@ -960,18 +959,11 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 | `colombo.officer` | Colombo Officer | INSTALLATION_OFFICER | DISTRICT | 1 |
 | `kandy.officer` | Kandy Officer | INSTALLATION_OFFICER | DISTRICT | 4 |
 
-### 11.2 `scripts/simulate.js` (step D2)
+### 11.2 Device readings (no simulator)
 
-- Reads devices from `SIM_DEVICES_FILE` (JSON array of `{ installation_id, device_secret }`), skipping ids in `SIM_SKIP`.
-- Uses `national.analyst` (password `TEST_ACCOUNT_PASSWORD`) to read each device's installation (`capacity_kw`) and last-known reading (`energy_kwh`) at start.
-- One **tick**, for each device:
-  - Device token via `/token` client credentials (cache each token for 55 minutes).
-  - `recorded_at` = now floored to 15 minutes (UTC).
-  - `power_kw` = 0 outside 06:15–18:00 Sri Lanka time; inside: `capacity_kw × 0.85 × sin(π × (minutesSinceMidnightLocal − 360) / 720)^1.3 × random(0.92–1.0)`, capped at `capacity_kw`, rounded to 3 decimals.
-  - `energy_kwh` = last energy + `power_kw × 0.25`, rounded to 3 decimals. `voltage` = random 215–250, 1 decimal.
-  - `POST /installations/{id}/readings`. 201 or 200 → keep the new energy. 429 → wait `Retry-After` seconds and retry once. Log any other status and continue.
-- Modes: `node scripts/simulate.js --once` (one tick, then exit) and default (tick at every 15-minute boundary + 30 s, forever).
-- Base URL from `TEST_BASE_URL`.
+- There is no device simulator: no `scripts/simulate.js`, no `simulate` npm script, no `SIM_*` variables (step D2 is dropped).
+- Readings are posted by hand as a device: get a token with the client-credentials grant (`installation_id` + device secret, from `seed/seed-output/` or `POST /installations/{installation-id}/device-credential`), then `POST /installations/{installation-id}/readings` from Swagger UI (Authorize → clientCredentials) or Postman.
+- Seeded installations showing `SILENT` is correct behaviour (§5.3).
 
 ---
 
@@ -988,7 +980,8 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 - A third and fourth full test run in a row on the same server process pass without 429.
 - Files: `01-pipeline.test.js`, `02-token.test.js`, `02b-hardening.test.js`, `03-geography.test.js`, `04-users.test.js`, `05-installations.test.js`, `06-readings.test.js`, `07-views.test.js`, `08-summaries.test.js`.
 - `smoke.test.js` is **read-only** (safe for production): health, docs, openapi, token for `national.analyst` and `colombo.analyst`, one GET per endpoint family, a 304 round trip, 401 without token, 403 `40301` for an analyst on `/users`, 404 for `INS-000064` as `colombo.analyst`, 403 `40302` for `colombo.analyst` on Kandy's summary, `X-Content-Type-Options: nosniff` present.
-- In CI, `smoke.test.js` runs as `node --env-file-if-exists=.env --test tests/smoke.test.js` with `TEST_BASE_URL`, `TEST_ACCOUNT_PASSWORD` and an empty `ORIGIN_SECRET` from the environment (step D3).
+- After a release, `smoke.test.js` is run by hand against the live base URL (`TEST_BASE_URL=<live base URL> npm run test:smoke`, `ORIGIN_SECRET` empty: the gateway adds the header).
+- The workflow's `smoke` job (`node --env-file-if-exists=.env --test tests/smoke.test.js` with `TEST_BASE_URL`, `TEST_ACCOUNT_PASSWORD` and an empty `ORIGIN_SECRET` from the environment) stays in the file and never runs (step D3).
 
 ---
 
@@ -1077,12 +1070,12 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 - Run the full suite against Atlas with the app running on the laptop.
 - Review every endpoint against §9 one more time; fix and log gaps in §15.
 - README sections, in this order:
-  1. Title "SLSEA Real-Time Solar Generation Data API", then a table: Student `Ryan Silva`; NIBM index `BSCCOMP24.2P-059`; Coventry index `16110614`; Module `NB6007CEM Web API Development`; Live API `_to be added_`; Live OpenAPI (Swagger UI) `_to be added_`; Repository = the repository URL.
+  1. Title "SLSEA Real-Time Solar Generation Data API", then a table: Student `Ryan Silva`; NIBM index `BSCCOMP24.2P-059`; Coventry index `16110614`; Module `NB6007CEM Web API Development`; Repository = the repository URL. Then a "Live links" table: Live API `https://gv9b9p7blb.execute-api.ap-southeast-2.amazonaws.com/solar/v1.0`; Swagger UI = Live API + `/docs/`; OpenAPI JSON = Live API + `/openapi`; Health `https://gv9b9p7blb.execute-api.ap-southeast-2.amazonaws.com/`.
   2. "Architecture": the line `<!-- architecture diagram: docs/architecture.png -->`, an empty image link to `docs/architecture.png`, then a one-line request path: client → API Gateway → Caddy → Node/Express → MongoDB Atlas.
   3. "Features": short points taken only from this file: endpoint groups (token, geography, installations, readings, summaries, users); write–read split (device tokens write, user tokens read); jurisdiction scoping; pagination, filtering, sorting; conditional GET and `If-Match`; the four-field error body (§6.10); rate limits (§7.11); security headers (§6.11); OpenAPI and Swagger UI (§10).
   4. "Tech stack": versions from `package.json` and §2.
   5. "Run locally": setup steps (Atlas URI in `.env`, laptop IP in Atlas Network Access, `npm install`, `npm run dev`, `npm run accounts`); seed command (user only); `.env` variable names (§4, names only); npm scripts (§3.2); local URLs: API base `http://localhost:3000/solar/v1.0`, Swagger UI `http://localhost:3000/solar/v1.0/docs`, OpenAPI JSON `http://localhost:3000/solar/v1.0/openapi`, health `http://localhost:3000/`.
-  6. Test accounts table (§11.1), edge-case installations table (§5.3), curl examples (both grants), how to run the tests (`npm test`; `npm run test:smoke` and `npm run simulate` marked as added in D1 / D2).
+  6. Test accounts table (§11.1), edge-case installations table (§5.3), curl examples (both grants), how to run the tests (`npm test`; `npm run test:smoke`).
   7. "Project structure": one line per folder in `src/`.
   8. "Deployment": "To be added in D1/AWS steps." (D1 fills it in).
 - The README contains no passwords, secrets or connection strings, and no feature that is not in this file.
@@ -1102,10 +1095,12 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 - Confirm the origin guard (§7.10) and `PUBLIC_BASE_URL` are used everywhere (Location, links, OpenAPI `servers` and `tokenUrl`).
 - `tests/smoke.test.js` (§12) is built in this step; the README no longer marks it as added in D1.
 - Locally, pm2 runs through `npx pm2`; it is never added to `package.json`.
-- README: "Deployment" section (EC2 commands: install Node 24, `npm ci --omit=dev`, `pm2 start ecosystem.config.cjs`, `pm2 save`, `pm2 startup`; update: `git pull && npm ci --omit=dev && pm2 reload slsea-api`).
+- README: "Deployment" section (EC2 commands: install Node 24, `npm ci --omit=dev`, `pm2 start ecosystem.config.cjs`, `pm2 save`, `pm2 startup`; updates are releases, §13 D3).
 - **Done when:** app runs under pm2 locally with `ORIGIN_SECRET` set; requests without the header get 403 `40309`; with `PUBLIC_BASE_URL=https://example.test/solar/v1.0` every response carries `Strict-Transport-Security`; `npm run test:smoke` passes with the header supplied (helpers send `X-Origin-Secret` when `ORIGIN_SECRET` is set).
 
-### D3 — Auto-deploy
+### D3 — Deploy script and CI check
+- Releases are manual. Auto-deploy is not used: the AWS account's Free plan blocks the IAM OIDC identity-provider actions (`iam:*Provider*`) that the `deploy` job needs.
+- Release: `git push origin main:live`, then on the server over SSH: `bash scripts/deploy.sh` (in the repository folder of `ubuntu`).
 - `scripts/deploy.sh` (bash, `set -euo pipefail`), run on the server as `ubuntu` from any folder; works in the script's parent folder:
   - one deploy at a time: `flock -w 600` on `${TMPDIR:-/tmp}/slsea-deploy.lock`;
   - loads nvm (`$NVM_DIR/nvm.sh`) when present; stops if `npm` or `pm2` is missing;
@@ -1123,12 +1118,20 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
   - `deploy` (needs `check`; only on `refs/heads/live` and when `vars.AWS_ROLE_ARN` is set; concurrency group `deploy`, `cancel-in-progress: false`): `aws-actions/configure-aws-credentials@v6` (OIDC, role `vars.AWS_ROLE_ARN`, region `vars.AWS_REGION`); `aws ssm send-command` with `AWS-RunShellScript` on `vars.EC2_INSTANCE_ID`, command `sudo -u ubuntu -i bash /home/ubuntu/slsea-solar-api/scripts/deploy.sh`; polls `get-command-invocation` every 10 s for up to 10 min; prints its stdout and stderr; fails unless the status is `Success`;
   - `smoke` (needs `deploy`; only on `refs/heads/live`): `tests/smoke.test.js` against `vars.PUBLIC_API_URL` (§12), password from the secret `TEST_ACCOUNT_PASSWORD`;
   - no AWS access keys; no secret is printed.
-- README "Deployment": one paragraph on the pipeline (`main` = development; release = `git push origin main:live`; push to `live` → check → deploy through SSM with rollback → smoke test).
+  - `vars.AWS_ROLE_ARN` is never set, so `deploy` and `smoke` stay in the file and never run; `check` runs on every push to `main` and `live`.
+- README "Deployment": the request path (client → API Gateway → Caddy → Node under pm2 on EC2 → MongoDB Atlas), the origin secret, the manual release and the CI `check` job; no text claiming auto-deploy.
 - **Done when:** `bash -n scripts/deploy.sh` passes; actionlint reports no errors for the workflow; `npm test` passes; no other file changes.
 
-### D2 — Device simulator
-- `scripts/simulate.js` (§11.2).
-- **Done when:** `npm run simulate -- --once` against local posts one reading per device (except `SIM_SKIP`) with 201s; a second `--once` in the same slot gets 200s; `INS-000004` overview shows `REPORTING`; no 429 responses during a full tick.
+### 17b — Pre-hand-in audit and decisions
+- Read-only audit of the code, tests, git history (all refs) and the live deployment against the module checklists: requirements coverage (data model, API design, coverage, implementation, seed-data behaviour, deployment evidence, security, report inputs) and a rookie-mistake sweep (secrets in history, `.gitignore`, hashing, leakage, validation, error codes, CORS and headers, indexes, `npm audit`, `engines`).
+- Production is touched only by read-only GETs and `npm run test:smoke`. Nothing is fixed in this step: findings are ranked MUST-FIX / SHOULD-FIX / NOTE in the step report, each with the files it would touch and the test impact.
+- Records: D2 dropped (§11.2, §5.3); manual releases, `deploy` and `smoke` jobs never run (§13 D3, §12); no per-IP failed-login limit (§7.11).
+- README: "Live links" table (§13 L11 item 1); "Deployment" section (§13 D3, gateway throttles §7.11); no simulator or auto-deploy text; no passwords; student name, index numbers and the architecture-diagram placeholder kept.
+- Only `docs/IMPLEMENTATION-GUIDE.md` and `README.md` change.
+- **Done when:** `npm test` passes locally; `npm run test:smoke` passes against the live base URL; Swagger UI, OpenAPI JSON and health answer 200 and `<Live API>/provinces` answers 401 without a token; no README text claims auto-deploy or a simulator.
+
+### D2 — Device simulator (dropped)
+- Not built (§11.2).
 
 ---
 
@@ -1152,10 +1155,11 @@ All paths below are after `/solar/v1.0`. Common to every endpoint unless stated:
 | L11 Full acceptance + README | ☑ | 2026-10-07 | f548d0e | Endpoint review against §9 (code read + live probes of 405/406/415/304/If-Match/filters/paging per family): one gap fixed (§15 #10); `02-token` no-store test also covers 405 and 406; README rewritten in the §13 L11 section order, no secrets; fresh clone (scratchpad): `npm install`, `.env`, `npm run dev`, `npm run accounts` (all 7 skipped), health, `/docs` 301, `/docs/` 200, `/openapi` 200; `npm test` 137 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) on two runs in a row on one server process after the fix (one run before it, same result), 429 only on `probe-` / dedicated `TEST-` keys |
 | L11b Audit fixes | ☑ | 2026-10-09 | de2583c | Read-only security audit, then four fixes: password and `BOOTSTRAP_ADMIN_PASSWORD` byte limit (§15 #12), path `URIError` → 404 `40401` (§15 #13), `token_rejected` subject cut to 64 characters (§15 #14), `NODE_ENV=production` in pm2 (§15 #15); `npm audit --omit=dev` 0 vulnerabilities; `git log --all -- .env seed/seed-output` empty; verified without the database (app on an ephemeral port, user lookup stubbed): `/installations/%E0` → 404 `40401` with nothing logged, 100-character username → 64-character `subject`, 40 × `é` rejected and 36 × `é` (72 bytes) accepted, 80-byte `BOOTSTRAP_ADMIN_PASSWORD` → exit 1; first attempt blocked by Atlas Network Access (IP added by the user); `npm test` 149 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty), new tests `01-pipeline` `%E0` → 404 `40401` and `04-users` 80-byte password → 400 `40001` pass, no stack trace in the server log, 429 only on `probe-` / dedicated `TEST-` keys. Approved with: OpenAPI byte-limit text, README row, "72 bytes" message check, generic `URIError` 404 message |
 | D1 Production readiness | ☑ | 2026-10-07 | 72cc469 | `ecosystem.config.cjs` (`slsea-api`, `src/server.js`, `--env-file=.env`, 1 instance, autorestart, 300M); `tests/smoke.test.js` built (§16 Q9); README "Deployment" (Node 24, `npm ci --omit=dev`, pm2 start/save/startup, update command); `PUBLIC_BASE_URL` confirmed as the only source of absolute URLs (`Location`/`Content-Location` in `lib/http-cache.js` and `controllers/readings.js`, paging links, OpenAPI `servers` + both `tokenUrl`s), origin guard is pipeline step 1 for every request; under `npx pm2` (7.0.4) with `ORIGIN_SECRET` set: requests without or with a wrong header → 403 `40309` (health, API, `/openapi`, `/token`), `npm run test:smoke` 10/10 with the header, `01-pipeline` origin guard test passes; with `PUBLIC_BASE_URL=https://example.test/solar/v1.0` `Strict-Transport-Security` on every sampled response (200, 301, 400, 401, 403, 404, 405, 406) and the returned URLs use the https base; pm2 killed, nothing on `PORT`. Approved with: §16 Q8 tooling routes exempt from `ETag`/`Last-Modified`; `cwd: __dirname` + absolute `--env-file` path (§15 #11); pm2 started from another folder → `npm test` 147 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty; the run includes `smoke.test.js`), 429 only on `probe-` / dedicated `TEST-` keys |
-| D3 Auto-deploy | ☑ | 2026-10-09 | | `scripts/deploy.sh` (flock, nvm, local-change guard, fetch/ff-only merge of `origin/live`, `npm ci --omit=dev`, `pm2 startOrReload` + `save`, 30 s health check with `X-Origin-Secret` on stdin, rollback with `reset --hard` + `npm ci` + `startOrReload`); `.github/workflows/deploy.yml` (`check` on `main`/`live`; `deploy` through SSM with OIDC on `live` only when `vars.AWS_ROLE_ARN` is set; `smoke` with `--env-file-if-exists`, secret `TEST_ACCOUNT_PASSWORD`); README pipeline paragraph; `bash -n` passes; shellcheck: no warnings (info only); actionlint 1.7.12: 0 errors; scratch git sandbox with stub `npm`/`pm2`/`curl`: up to date → exit 0, new commit → deployed, failed health → rolled back to the previous commit + exit 1, modified tracked file → refused, diverged branch → ff-only fails without rollback, `.env` secret never printed; real `curl -H @-` against a local stub server sends the header (200), empty secret sends none; `node --check` on 51 files and `--env-file-if-exists` without `.env` work locally; `npm test` 149 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty), server stopped, nothing on `PORT`. Not run against AWS (no role yet) |
-| D2 Device simulator | ☐ | | | |
+| D3 Deploy script + CI check | ☑ | 2026-10-09 | 749652f | `scripts/deploy.sh` (flock, nvm, local-change guard, fetch/ff-only merge of `origin/live`, `npm ci --omit=dev`, `pm2 startOrReload` + `save`, 30 s health check with `X-Origin-Secret` on stdin, rollback with `reset --hard` + `npm ci` + `startOrReload`); `.github/workflows/deploy.yml` (`check` on `main`/`live`; `deploy` through SSM with OIDC on `live` only when `vars.AWS_ROLE_ARN` is set; `smoke` with `--env-file-if-exists`, secret `TEST_ACCOUNT_PASSWORD`); README pipeline paragraph; `bash -n` passes; shellcheck: no warnings (info only); actionlint 1.7.12: 0 errors; scratch git sandbox with stub `npm`/`pm2`/`curl`: up to date → exit 0, new commit → deployed, failed health → rolled back to the previous commit + exit 1, modified tracked file → refused, diverged branch → ff-only fails without rollback, `.env` secret never printed; real `curl -H @-` against a local stub server sends the header (200), empty secret sends none; `node --check` on 51 files and `--env-file-if-exists` without `.env` work locally; `npm test` 149 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty), server stopped, nothing on `PORT`. Not run against AWS (no role yet). Auto-deploy dropped in 17b (AWS OIDC blocked by the Free-plan policy `iam:*Provider*`): `deploy` and `smoke` never run, releases are manual |
+| 17b Pre-hand-in audit + decisions | ☑ | 2026-10-09 | | Read-only audit (code, tests, `git log -p --all`, live API); production touched only by GETs and `npm run test:smoke` (10/10 against the live URL); findings ranked MUST-FIX / SHOULD-FIX / NOTE in the step report, none fixed; history: no `.env`, connection string with a password, JWT/origin secret, real password, device secret or seed output ever committed; `npm audit` 0 vulnerabilities; live OpenAPI has all 22 paths / 29 operations. Decisions recorded: D2 dropped (§11.2, §5.3), manual releases with `deploy`/`smoke` jobs never running (§13 D3, §12), no per-IP failed-login limit (§7.11). README: live links table, Deployment section rewritten, simulator and auto-deploy text removed (§15 #16). Only the guide and README changed; `npm test` 149 pass / 1 skipped (origin guard, `ORIGIN_SECRET` empty) before and after the edits, server stopped, nothing on `PORT` |
+| D2 Device simulator | ✕ | 2026-10-09 | — | Dropped (17b): not built; readings are posted by hand as a device (§11.2) |
 
-Status values: ☐ not started · ◐ in progress · ☑ done.
+Status values: ☐ not started · ◐ in progress · ☑ done · ✕ dropped.
 
 ---
 
@@ -1178,6 +1182,7 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 13 | L11b | A path parameter with invalid percent-encoding (e.g. `/installations/%E0`) answered 500 `50001` and logged a stack trace, without a token (bug since L2): the router throws a `URIError` before any handler runs | §6.1, §6.2 | `error-handler.js` answers a `URIError` with 404 `40401` and does not log it; `01-pipeline` test | (L11b) |
 | 14 | L11b | `token_rejected` logged `subject` as sent, up to the 16kb form limit (bug since L3a) | §7.12 | `controllers/token.js` cuts `subject` to 64 characters | (L11b) |
 | 15 | L11b | `ecosystem.config.cjs` did not set `NODE_ENV`, so production ran in Express's development mode | §13 D1 | `env: { NODE_ENV: 'production' }`; nothing in `src/` reads `NODE_ENV` (Express uses it only for `view cache` and finalhandler's error page, neither of which is reached) | (L11b) |
+| 16 | 17b | README (own text, D3/L11) described automatic deployment through SSM with a smoke job, an `npm run simulate` script and `SIM_*` variables; neither the deploy job nor a simulator runs, and the live links were `_to be added_` | §13 D3, §11.2, §13 L11 | README "Deployment" rewritten (manual release, CI `check` only), simulator rows removed, "Live links" table added; no code change | (17b) |
 
 ---
 
@@ -1284,3 +1289,10 @@ Status values: ☐ not started · ◐ in progress · ☑ done.
 | 81 | 2026-10-09 | D3 | §3 | Layout lists `scripts/deploy.sh` and `.github/workflows/deploy.yml` |
 | 82 | 2026-10-09 | D3 | §12 | CI runs `smoke.test.js` with `node --env-file-if-exists=.env`, `TEST_BASE_URL`, `TEST_ACCOUNT_PASSWORD` and an empty `ORIGIN_SECRET` |
 | 83 | 2026-10-09 | D3 | §13 D3 | `deploy.sh` loads nvm, refuses to run with local changes to tracked files, locks `${TMPDIR:-/tmp}/slsea-deploy.lock`, passes the origin header to `curl` on stdin; the `deploy` job (not the workflow) holds concurrency group `deploy` |
+| 84 | 2026-10-09 | 17b (user) | §13, §14 | New step 17b (pre-hand-in audit, decisions, README live links) after D3; status value ✕ dropped |
+| 85 | 2026-10-09 | 17b (user) | §11.2, §13 D2, §3, §3.2, §4 | D2 dropped: no `scripts/simulate.js`, no `simulate` script, no `SIM_DEVICES_FILE` / `SIM_SKIP`; readings are posted by hand as a device through Swagger UI or Postman |
+| 86 | 2026-10-09 | 17b (user) | §5.3 | Seeded installations show `SILENT` once the seed is older than 30 minutes; this is correct behaviour |
+| 87 | 2026-10-09 | 17b (user) | §13 D3, §3, §12 | Auto-deploy dropped (AWS OIDC blocked by the Free-plan policy `iam:*Provider*`): `deploy` and `smoke` jobs stay in the workflow and never run (`vars.AWS_ROLE_ARN` never set); `check` stays; release = `git push origin main:live`, then `bash scripts/deploy.sh` on the server over SSH; smoke test run by hand |
+| 88 | 2026-10-09 | 17b (user) | §13 D1 | README server updates follow the D3 release, not `git pull && … pm2 reload` |
+| 89 | 2026-10-09 | 17b (user) | §7.11 | Gateway throttles 50 requests/s per route and 5 requests/s on `POST /token`; no per-IP failed-login limit; password spraying across many usernames is a documented limitation |
+| 90 | 2026-10-09 | 17b (user) | §13 L11 | README has a "Live links" table (Live API, Swagger UI, OpenAPI JSON, health) instead of the `_to be added_` rows; tests line no longer mentions `npm run simulate` |
